@@ -172,6 +172,31 @@ fn block_source_lines(diff: &DiffFile, side: DiffSide, start: u32, end: u32) -> 
     lines
 }
 
+fn is_empty_line(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+/// Place one line at `pos`, overwriting empty slots and cascading displaced content
+/// with the same empty-overwrite / non-empty-push strategy.
+fn place_line_at(lines: &mut Vec<String>, pos: usize, text: String) {
+    if pos >= lines.len() {
+        lines.push(text);
+        return;
+    }
+    if is_empty_line(&lines[pos]) {
+        lines[pos] = text;
+        return;
+    }
+    let displaced = std::mem::replace(&mut lines[pos], text);
+    place_line_at(lines, pos + 1, displaced);
+}
+
+fn prepare_insert_point(file_c_lines: &mut Vec<String>, insert_at: usize) {
+    if insert_at > file_c_lines.len() {
+        file_c_lines.resize(insert_at, String::new());
+    }
+}
+
 fn apply_block_to_file_c(
     file_c_lines: &mut Vec<String>,
     diff: &DiffFile,
@@ -185,12 +210,12 @@ fn apply_block_to_file_c(
     if block_lines.is_empty() {
         return Err("selected syntax block has no source lines.".to_owned());
     }
-    if insert_at > file_c_lines.len() {
-        file_c_lines.resize(insert_at, String::new());
-    }
 
-    for (offset, text) in block_lines.iter().enumerate() {
-        file_c_lines.insert(insert_at + offset, text.clone());
+    prepare_insert_point(file_c_lines, insert_at);
+    let mut pos = insert_at;
+    for text in block_lines {
+        place_line_at(file_c_lines, pos, text);
+        pos += 1;
     }
     Ok(())
 }
@@ -977,5 +1002,155 @@ mod apply_tests {
         assert_eq!(file_c[2], "");
         assert_eq!(file_c[3], "");
         assert_eq!(file_c[4], "new");
+    }
+
+    #[test]
+    fn insert_at_exact_line_not_collapsed_by_leading_empty_gap() {
+        let mut file_c = vec!["only".to_owned()];
+        let diff = DiffFile {
+            path: String::new(),
+            language: String::new(),
+            status: model::DiffStatus::Changed,
+            extra_info: None,
+            aligned_lines: vec![AlignedLine {
+                lhs_line: Some(0),
+                rhs_line: Some(0),
+                lhs_text: "x".into(),
+                rhs_text: "x".into(),
+                is_novel_lhs: true,
+                is_novel_rhs: true,
+                lhs_spans: vec![],
+                rhs_spans: vec![],
+            }],
+            lhs_syntax_blocks: vec![],
+            rhs_syntax_blocks: vec![],
+        };
+        let sel = BlockSelection {
+            side: DiffSide::Lhs,
+            block_id: 0,
+            start_line: 0,
+            end_line: 0,
+        };
+
+        apply_block_to_file_c(&mut file_c, &diff, sel, 4).unwrap();
+        assert_eq!(file_c[4], "x");
+        assert_eq!(file_c[1], "");
+        assert_eq!(file_c[2], "");
+        assert_eq!(file_c[3], "");
+    }
+
+    #[test]
+    fn insert_block_overwrites_empty_lines() {
+        let mut file_c = vec![
+            "a".to_owned(),
+            String::new(),
+            String::new(),
+            "c".to_owned(),
+        ];
+        let diff = DiffFile {
+            path: String::new(),
+            language: String::new(),
+            status: model::DiffStatus::Changed,
+            extra_info: None,
+            aligned_lines: vec![
+                AlignedLine {
+                    lhs_line: Some(0),
+                    rhs_line: Some(0),
+                    lhs_text: "x".into(),
+                    rhs_text: "x".into(),
+                    is_novel_lhs: true,
+                    is_novel_rhs: true,
+                    lhs_spans: vec![],
+                    rhs_spans: vec![],
+                },
+                AlignedLine {
+                    lhs_line: Some(1),
+                    rhs_line: Some(1),
+                    lhs_text: "y".into(),
+                    rhs_text: "y".into(),
+                    is_novel_lhs: true,
+                    is_novel_rhs: true,
+                    lhs_spans: vec![],
+                    rhs_spans: vec![],
+                },
+            ],
+            lhs_syntax_blocks: vec![],
+            rhs_syntax_blocks: vec![],
+        };
+        let sel = BlockSelection {
+            side: DiffSide::Lhs,
+            block_id: 0,
+            start_line: 0,
+            end_line: 1,
+        };
+
+        apply_block_to_file_c(&mut file_c, &diff, sel, 1).unwrap();
+        assert_eq!(
+            file_c,
+            vec![
+                "a".to_owned(),
+                "x".to_owned(),
+                "y".to_owned(),
+                "c".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_block_displaced_content_overwrites_empty_slots() {
+        let mut file_c = vec![
+            "a".to_owned(),
+            "b".to_owned(),
+            String::new(),
+            "c".to_owned(),
+        ];
+        let diff = DiffFile {
+            path: String::new(),
+            language: String::new(),
+            status: model::DiffStatus::Changed,
+            extra_info: None,
+            aligned_lines: vec![
+                AlignedLine {
+                    lhs_line: Some(0),
+                    rhs_line: Some(0),
+                    lhs_text: "x".into(),
+                    rhs_text: "x".into(),
+                    is_novel_lhs: true,
+                    is_novel_rhs: true,
+                    lhs_spans: vec![],
+                    rhs_spans: vec![],
+                },
+                AlignedLine {
+                    lhs_line: Some(1),
+                    rhs_line: Some(1),
+                    lhs_text: "y".into(),
+                    rhs_text: "y".into(),
+                    is_novel_lhs: true,
+                    is_novel_rhs: true,
+                    lhs_spans: vec![],
+                    rhs_spans: vec![],
+                },
+            ],
+            lhs_syntax_blocks: vec![],
+            rhs_syntax_blocks: vec![],
+        };
+        let sel = BlockSelection {
+            side: DiffSide::Lhs,
+            block_id: 0,
+            start_line: 0,
+            end_line: 1,
+        };
+
+        apply_block_to_file_c(&mut file_c, &diff, sel, 1).unwrap();
+        assert_eq!(
+            file_c,
+            vec![
+                "a".to_owned(),
+                "x".to_owned(),
+                "y".to_owned(),
+                "b".to_owned(),
+                "c".to_owned(),
+            ]
+        );
     }
 }
