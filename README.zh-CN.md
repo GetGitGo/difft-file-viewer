@@ -35,7 +35,7 @@ Viewer 可对 C/C++ 输入可选执行 `clang-format`，再子进程调用 `diff
    - **两个参数：** **A | B** 双栏（A 侧红 = 删除/变更，B 侧绿 = 新增/变更）。
    - **三个参数：** **A | C | B** — diff 仍为 A vs B；**C** 按行号显示 `file-c`（不存在则创建）。可在 A/B 选中语法块 **Apply** 写入 C。
 
-diff 成功且无警告时状态区隐藏；错误、`clang-format` 警告、diff fallback 等显示在紫色信息区。
+成功时状态区隐藏；错误、`clang-format` 警告、diff fallback 等显示在紫色信息区。
 
 ## 环境要求
 
@@ -193,12 +193,13 @@ difft-file-viewer file-a file-b file-c
 
 使用 **`.clangformat`**（无连字符），**不是**常见的 **`.clang-format`**，以免误用项目里已有的 `.clang-format`。
 
-示例 `./.clangformat`：
+本仓库提供 **[`.clangformat.example`](.clangformat.example)**（基于 Google、100 列）。请复制到启动 viewer 时的工作目录：
 
-```yaml
-BasedOnStyle: LLVM
-IndentWidth: 4
+```bash
+cp .clangformat.example .clangformat
 ```
+
+按需编辑 `.clangformat` 以匹配团队风格；示例文件不会被自动读取。
 
 ### 实际执行的命令
 
@@ -230,7 +231,7 @@ clang-format -style=file:<cwd>/.clangformat <file>  →  ./.clangformat.cache.d/
 
 **强制全量重跑：** 删除 `.clangformat.cache` 与 `.clangformat.cache.d/`，或 touch 配置/源文件使 mtime 变化。
 
-### 注意
+### 注意事项与限制
 
 - 请在放有 `.clangformat` 的目录下启动 viewer（先 `cd`）；配置**不是**按每个源文件路径向上查找。
 - **不修改** `file-a` / `file-b` 原文件；仅 diff 使用缓存副本。Apply 写入 `file-c` 的内容来自 diff 视图（若启用格式化，即为格式化后的文本）。
