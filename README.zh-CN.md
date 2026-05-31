@@ -263,6 +263,15 @@ clang-format -style=file:<cwd>/.clangformat <file>  →  ./.clangformat.cache.d/
 
 行号与 Apply 在固定 **gutter** 列；仅代码 pane 水平滚动。
 
+### 字号
+
+| 按键 | 作用 |
+|------|------|
+| `Ctrl+=` 或 `Ctrl++` / **⌘=** / **⌘+** | 增大代码字号（8–24 px） |
+| `Ctrl+-` / **⌘-** | 减小代码字号 |
+
+行高、gutter 宽度与水平滚动步长会随字号同步缩放。
+
 ### 选中与 Apply（仅三栏）
 
 **仅**在传入三个路径（`file-a`、`file-b`、`file-c`）时可用。两个参数时无 Apply / Apply 撤销。
@@ -275,6 +284,14 @@ clang-format -style=file:<cwd>/.clangformat <file>  →  ./.clangformat.cache.d/
 | `u` 或 **Ctrl+Z** / **⌘Z** | 撤销最近一次已完成的 **Apply**（同时取消待插入状态；最多 100 步） |
 
 不带 Ctrl/Meta 的 `u` 仅撤销 **Apply**；**Ctrl+Z** / **⌘Z** 相同。**Ctrl+u** / **⌘u** 仍为向上半页滚动。
+
+### 退出
+
+| 按键 | 作用 |
+|------|------|
+| `q` | 退出 viewer |
+
+三栏模式下，若 **Apply** 已修改 `file-c`，退出前会先写回磁盘；路径为 C/C++ 且 cwd 已配置 `.clangformat` 时，还会在独立子进程中执行 `clang-format -i`。
 
 ## JSON 格式（重要）
 

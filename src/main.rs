@@ -18,7 +18,10 @@ use difft_probe::{difft_command, install_message, probe_difft};
 use model::{
     gutter_syntax_block, parse_diff_json, warning_message, AlignedLine, DiffFile, SyntaxBlock,
 };
-use segments::{build_segments, text_pixel_width, to_slint_segments, Side};
+use segments::{
+    build_segments, code_brush, plain_line_brush, text_pixel_width, to_slint_segments, Side,
+    GUTTER_INSERT, GUTTER_LINE, GUTTER_SELECTED,
+};
 
 const BYTE_LIMIT: &str = "32000000";
 /// Show essentially the whole file in the GUI (not just changed hunks).
@@ -319,6 +322,9 @@ fn slint_line(
         lhs_plain_text: line.lhs_text.clone().into(),
         rhs_plain_text: line.rhs_text.clone().into(),
         center_plain_text: center_text.clone().into(),
+        lhs_plain_color: plain_line_brush(line.is_novel_lhs, Side::Left),
+        rhs_plain_color: plain_line_brush(line.is_novel_rhs, Side::Right),
+        center_plain_color: plain_line_brush(false, Side::Left),
         lhs_segments: to_slint_segments(&build_segments(
             &line.lhs_text,
             &line.lhs_spans,
@@ -357,6 +363,12 @@ fn set_lines_on_ui(
     ui.set_max_content_width(max_line_content_width(&lines));
     let model: slint::ModelRc<DiffLine> = std::rc::Rc::new(slint::VecModel::from(lines)).into();
     ui.set_lines(model);
+}
+
+fn init_gutter_colors(ui: &MainWindow) {
+    ui.set_gutter_line_color(code_brush(GUTTER_LINE));
+    ui.set_gutter_selected_color(code_brush(GUTTER_SELECTED));
+    ui.set_gutter_insert_color(code_brush(GUTTER_INSERT));
 }
 
 fn refresh_diff_ui(
@@ -775,6 +787,7 @@ fn maximize_on_startup(ui: &MainWindow) {
 fn main() -> Result<(), slint::PlatformError> {
     let cli = parse_cli_args();
     let ui = MainWindow::new()?;
+    init_gutter_colors(&ui);
     maximize_on_startup(&ui);
 
     let (path_a, path_b, path_c, triple_pane) = match &cli {

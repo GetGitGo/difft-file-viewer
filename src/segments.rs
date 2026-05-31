@@ -174,6 +174,40 @@ fn brush_from_hex(hex: &str) -> Brush {
 /// Approximate advance width for "Courier New" 12px in the viewer.
 pub const CHAR_WIDTH: f32 = 7.2;
 
+pub const GUTTER_LINE: &str = "#6272a4";
+pub const GUTTER_SELECTED: &str = "#bd93f9";
+pub const GUTTER_INSERT: &str = "#50fa7b";
+
+pub fn adjust_brightness_hex(hex: &str, factor: f32) -> String {
+    let hex = hex.trim_start_matches('#');
+    let value = u32::from_str_radix(hex, 16).unwrap_or(0xf8_f8_f2);
+    let r = ((value >> 16) & 0xff) as f32;
+    let g = ((value >> 8) & 0xff) as f32;
+    let b = (value & 0xff) as f32;
+    let scale = |c: f32| (c * factor).round().clamp(0.0, 255.0) as u8;
+    format!("#{:02x}{:02x}{:02x}", scale(r), scale(g), scale(b))
+}
+
+pub fn brush_with_brightness(hex: &str, factor: f32) -> Brush {
+    brush_from_hex(&adjust_brightness_hex(hex, factor))
+}
+
+/// Global code foreground scale (fixed; max supported by the viewer).
+pub const CODE_BRIGHTNESS: f32 = 1.3;
+
+pub fn code_brush(hex: &str) -> Brush {
+    brush_with_brightness(hex, CODE_BRIGHTNESS)
+}
+
+pub fn plain_line_brush(novel: bool, side: Side) -> Brush {
+    let hex = if novel {
+        novel_color(side)
+    } else {
+        WHITE
+    };
+    code_brush(hex)
+}
+
 pub fn text_pixel_width(text: &str) -> f32 {
     text.chars().count() as f32 * CHAR_WIDTH
 }
@@ -186,7 +220,7 @@ pub fn to_slint_segments(segments: &[Segment]) -> slint::ModelRc<crate::TextSegm
             .map(|seg| {
                 let item = crate::TextSegment {
                     text: SharedString::from(seg.text.as_str()),
-                    color: brush_from_hex(seg.color),
+                    color: code_brush(seg.color),
                     bold: seg.bold,
                     italic: seg.italic,
                     x_offset: x,
@@ -226,5 +260,17 @@ mod tests {
         }];
         let segments = build_segments("  (println \"hello!\")", &spans, true, Side::Left);
         assert!(segments.iter().any(|s| s.color == RED && s.text.contains("hello")));
+    }
+
+    #[test]
+    fn adjust_brightness_scales_rgb() {
+        assert_eq!(adjust_brightness_hex("#808080", 1.5), "#c0c0c0");
+        assert_eq!(adjust_brightness_hex("#ffffff", 0.5), "#808080");
+    }
+
+    #[test]
+    fn adjust_brightness_clamps_to_byte_range() {
+        assert_eq!(adjust_brightness_hex("#ffffff", 2.0), "#ffffff");
+        assert_eq!(adjust_brightness_hex("#000000", 0.1), "#000000");
     }
 }

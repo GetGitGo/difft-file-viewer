@@ -22,6 +22,9 @@ export struct DiffLine {
     lhs-plain-text: string,
     rhs-plain-text: string,
     center-plain-text: string,
+    lhs-plain-color: brush,
+    rhs-plain-color: brush,
+    center-plain-color: brush,
     lhs-content-width: length,
     rhs-content-width: length,
     center-content-width: length,
@@ -125,6 +128,10 @@ component CodeSide inherits Rectangle {
     in property <bool> gutter-enabled: true;
     in property <bool> insert-target: false;
     in property <length> line-height: 20px;
+    in property <length> code-font-size: 12px;
+    in property <brush> gutter-line-color: #6272a4;
+    in property <brush> gutter-selected-color: #bd93f9;
+    in property <brush> gutter-insert-color: #50fa7b;
     in property <length> gutter-width: 44px;
     in property <length> code-scroll-x: 0px;
     callback gutter-clicked();
@@ -159,8 +166,9 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: root.plain-text;
             color: root.plain-color;
-            font-family: "Courier New";
-            font-size: 12px;
+            font-family: "monospace";
+            font-size: root.code-font-size;
+            font-weight: 700;
             wrap: no-wrap;
             horizontal-alignment: left;
             vertical-alignment: center;
@@ -168,13 +176,13 @@ component CodeSide inherits Rectangle {
         }
 
         for seg in root.segments: Text {
-            x: seg.x-offset - root.code-scroll-x;
+            x: seg.x-offset * root.code-font-size / 12px - root.code-scroll-x;
             height: root.line-height;
             text: seg.text;
             color: seg.color;
-            font-family: "Courier New";
-            font-size: 12px;
-            font-weight: seg.bold ? 700 : 400;
+            font-family: "monospace";
+            font-size: root.code-font-size;
+            font-weight: 700;
             font-italic: seg.italic;
             vertical-alignment: center;
         }
@@ -214,8 +222,8 @@ component CodeSide inherits Rectangle {
             width: 11px;
             height: root.line-height;
             text: "▶";
-            color: #50fa7b;
-            font-size: 9px;
+            color: root.gutter-insert-color;
+            font-size: root.code-font-size * 9 / 12;
             font-weight: 700;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -226,10 +234,10 @@ component CodeSide inherits Rectangle {
             width: parent.width - 6px - (root.insert-hovered ? 10px : 0px);
             height: root.line-height;
             text: root.line-number >= 1 ? root.line-number : "";
-            color: root.insert-hovered ? #50fa7b : (root.selected ? #bd93f9 : #6272a4);
-            font-family: "Courier New";
-            font-size: 12px;
-            font-weight: root.insert-hovered ? 700 : 400;
+            color: root.insert-hovered ? root.gutter-insert-color : (root.selected ? root.gutter-selected-color : root.gutter-line-color);
+            font-family: "monospace";
+            font-size: root.code-font-size;
+            font-weight: 700;
             horizontal-alignment: right;
             vertical-alignment: center;
             visible: !root.show-apply;
@@ -258,7 +266,11 @@ component CodeSide inherits Rectangle {
 
 component DiffCodeScrollView inherits Rectangle {
     in property <length> code-line-height;
+    in property <length> code-font-size: 12px;
     in property <length> line-number-width;
+    in property <brush> gutter-line-color;
+    in property <brush> gutter-selected-color;
+    in property <brush> gutter-insert-color;
     in property <bool> triple-pane: false;
     in property <bool> apply-pending: false;
     in property <[DiffLine]> lines;
@@ -269,8 +281,9 @@ component DiffCodeScrollView inherits Rectangle {
     callback center-gutter-clicked(row-index: int);
 
     private property <int> column-count: root.triple-pane ? 3 : 2;
+    private property <length> scaled-max-content-width: root.max-content-width * root.code-font-size / 12px;
     private property <length> column-code-width: max(0px, list.width / root.column-count - root.line-number-width);
-    private property <length> scroll-max-x: max(0px, root.max-content-width - column-code-width);
+    private property <length> scroll-max-x: max(0px, root.scaled-max-content-width - column-code-width);
 
     vertical-stretch: 1;
     horizontal-stretch: 1;
@@ -288,11 +301,15 @@ component DiffCodeScrollView inherits Rectangle {
 
             CodeSide {
                 line-height: root.code-line-height;
+                code-font-size: root.code-font-size;
+                gutter-line-color: root.gutter-line-color;
+                gutter-selected-color: root.gutter-selected-color;
+                gutter-insert-color: root.gutter-insert-color;
                 gutter-width: root.line-number-width;
                 code-scroll-x: root.code-scroll-x;
                 line-number: line.lhs-line;
                 plain-text: line.lhs-plain-text;
-                plain-color: line.lhs-novel ? #ff5555 : #f8f8f2;
+                plain-color: line.lhs-plain-color;
                 segments: line.lhs-segments;
                 novel: line.lhs-novel;
                 selected: line.lhs-selected;
@@ -310,11 +327,15 @@ component DiffCodeScrollView inherits Rectangle {
 
             if (root.triple-pane): CodeSide {
                 line-height: root.code-line-height;
+                code-font-size: root.code-font-size;
+                gutter-line-color: root.gutter-line-color;
+                gutter-selected-color: root.gutter-selected-color;
+                gutter-insert-color: root.gutter-insert-color;
                 gutter-width: root.line-number-width;
                 code-scroll-x: root.code-scroll-x;
                 line-number: line.center-line;
                 plain-text: line.center-plain-text;
-                plain-color: #f8f8f2;
+                plain-color: line.center-plain-color;
                 segments: line.center-segments;
                 novel: false;
                 selected: line.center-selected;
@@ -330,11 +351,15 @@ component DiffCodeScrollView inherits Rectangle {
 
             CodeSide {
                 line-height: root.code-line-height;
+                code-font-size: root.code-font-size;
+                gutter-line-color: root.gutter-line-color;
+                gutter-selected-color: root.gutter-selected-color;
+                gutter-insert-color: root.gutter-insert-color;
                 gutter-width: root.line-number-width;
                 code-scroll-x: root.code-scroll-x;
                 line-number: line.rhs-line;
                 plain-text: line.rhs-plain-text;
-                plain-color: line.rhs-novel ? #50fa7b : #f8f8f2;
+                plain-color: line.rhs-plain-color;
                 segments: line.rhs-segments;
                 novel: line.rhs-novel;
                 selected: line.rhs-selected;
@@ -356,6 +381,10 @@ component DiffCodeScrollView inherits Rectangle {
         root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
     }
 
+    changed code-font-size => {
+        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+    }
+
     changed scroll-max-x => {
         root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
     }
@@ -366,11 +395,11 @@ component DiffCodeScrollView inherits Rectangle {
     }
 
     public function scroll-code-left() {
-        root.code-scroll-x = max(0px, root.code-scroll-x - 48px);
+        root.code-scroll-x = max(0px, root.code-scroll-x - root.code-font-size * 48 / 12);
     }
 
     public function scroll-code-right() {
-        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + 48px);
+        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + root.code-font-size * 48 / 12);
     }
 
     public function scroll-code-horizontal(delta: length) {
@@ -418,8 +447,12 @@ export component MainWindow inherits Window {
 
     in-out property <length> toolbar-height: 28px;
     in-out property <length> toolbar-gap: 6px;
-    in-out property <length> code-line-height: 20px;
-    in-out property <length> line-number-width: 44px;
+    in-out property <length> code-font-size: 12px;
+    in-out property <brush> gutter-line-color: #6272a4;
+    in-out property <brush> gutter-selected-color: #bd93f9;
+    in-out property <brush> gutter-insert-color: #50fa7b;
+    private property <length> code-line-height: root.code-font-size * 20 / 12;
+    private property <length> line-number-width: root.code-font-size * 44 / 12;
 
     in-out property <string> path-a: "";
     in-out property <string> path-b: "";
@@ -516,6 +549,14 @@ export component MainWindow inherits Window {
         event.text == "q" && !event.modifiers.shift && !root.vim-modifiers(event)
     }
 
+    pure function is-code-font-larger(event: KeyEvent) -> bool {
+        root.vim-modifiers(event) && (event.text == "=" || event.text == "+")
+    }
+
+    pure function is-code-font-smaller(event: KeyEvent) -> bool {
+        root.vim-modifiers(event) && event.text == "-"
+    }
+
     root-focus := FocusScope {
         width: 100%;
         height: 100%;
@@ -589,6 +630,16 @@ export component MainWindow inherits Window {
                 root.quit-requested();
                 return accept;
             }
+            if (root.is-code-font-larger(event)) {
+                root.code-font-size = min(24px, root.code-font-size + 1px);
+                root.vim-pending-g = false;
+                return accept;
+            }
+            if (root.is-code-font-smaller(event)) {
+                root.code-font-size = max(8px, root.code-font-size - 1px);
+                root.vim-pending-g = false;
+                return accept;
+            }
             return reject;
         }
 
@@ -635,7 +686,11 @@ export component MainWindow inherits Window {
         code-scroll := DiffCodeScrollView {
             vertical-stretch: 1;
             code-line-height: root.code-line-height;
+            code-font-size: root.code-font-size;
             line-number-width: root.line-number-width;
+            gutter-line-color: root.gutter-line-color;
+            gutter-selected-color: root.gutter-selected-color;
+            gutter-insert-color: root.gutter-insert-color;
             triple-pane: root.triple-pane;
             apply-pending: root.apply-pending;
             lines: root.lines;

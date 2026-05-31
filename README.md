@@ -263,6 +263,15 @@ On macOS, **Ctrl** in the table below also matches **⌘ (Meta)** for the same a
 
 Line numbers and Apply sit in a fixed **gutter** column; only the code pane scrolls horizontally.
 
+### Font size
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+=` or `Ctrl++` / **⌘=** / **⌘+** | Increase code font size (8–24 px) |
+| `Ctrl+-` / **⌘-** | Decrease code font size |
+
+Line height, gutter width, and horizontal scroll step scale with the font size.
+
 ### Selection and Apply (triple-pane only)
 
 These apply **only** when three file paths were given (`file-a`, `file-b`, `file-c`). With two paths, Apply and Apply-undo are disabled.
@@ -275,6 +284,14 @@ These apply **only** when three file paths were given (`file-a`, `file-b`, `file
 | `u` or **Ctrl+Z** / **⌘Z** | Undo the most recent completed **Apply** (also cancels a pending insert); up to 100 steps |
 
 Plain `u` (no Ctrl/Meta) undoes **Apply** only. **Ctrl+Z** / **⌘Z** does the same. **Ctrl+u** / **⌘u** still scrolls half a page up.
+
+### Quit
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit the viewer |
+
+In triple-pane mode, if **Apply** modified `file-c`, the viewer writes it to disk on quit. For C/C++ paths when `.clangformat` is configured in the cwd, it also runs `clang-format -i` in a detached process.
 
 ## JSON format (important)
 
