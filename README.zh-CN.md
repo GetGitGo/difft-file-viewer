@@ -170,7 +170,7 @@ difft-file-viewer file-a file-b file-c
 - 工具栏：**A | C | B**（CLI 顺序：第 1、3、2 个参数）
 - Diff 仍为 **A vs B**；**C** 列按行号显示 `file-c`
 - `file-c` 不存在时会**创建**（空文件；必要时创建父目录）
-- 在 A/B 选中语法块后，点击块首行 **Apply**，将该块写入 `file-c` 对应行并落盘
+- 在 A/B 选中语法块后，点击 **Apply**，再点击 **file C** 行号插入（**Esc** 取消）。
 
 ## C/C++ 格式化（`clang-format`）
 
@@ -270,10 +270,10 @@ clang-format -style=file:<cwd>/.clangformat <file>  →  ./.clangformat.cache.d/
 |-------------|------|
 | 点击 A 或 B 侧行号（gutter） | 选中该行所在语法块；再次点击同一行号取消选中 |
 | `Escape` | 取消语法块选中 |
-| **Apply**（选中块首行 gutter 内的黄色按钮） | 将选中块从 A 或 B 写入 `file-c` 对应行号并保存 |
-| `u` | 撤销最近一次 **Apply**（最多保留 100 步撤销历史） |
+| **Apply**（选中块首行 gutter 内的黄色按钮） | 进入插入模式：点击 **file C** 行号插入块（原行后移），**Esc** 取消 |
+| `u` 或 **Ctrl+Z** / **⌘Z** | 撤销最近一次已完成的 **Apply**（同时取消待插入状态；最多 100 步） |
 
-不带 Ctrl/Meta 的 `u` 仅撤销 **Apply**；`Ctrl+u` / `Meta+u` 仍为向上半页滚动。
+不带 Ctrl/Meta 的 `u` 仅撤销 **Apply**；**Ctrl+Z** / **⌘Z** 相同。**Ctrl+u** / **⌘u** 仍为向上半页滚动。
 
 ## JSON 格式（重要）
 

@@ -170,7 +170,7 @@ difft-file-viewer file-a file-b file-c
 - Toolbar: **A | C | B** (CLI order: 1st, 3rd, 2nd path).
 - Diff is still **A vs B**; column **C** shows `file-c` aligned by line number.
 - If `file-c` does not exist, it is **created** (empty file; parent directories are created if needed).
-- Select a syntax block on A or B, then click **Apply** on the block’s first line to copy that block into `file-c` at the same line indices and save to disk.
+- Select a syntax block on A or B, click **Apply**, then click a **file C** line number to insert the block (or **Esc** to cancel).
 
 ## C/C++ formatting (`clang-format`)
 
@@ -270,10 +270,10 @@ These apply **only** when three file paths were given (`file-a`, `file-b`, `file
 |--------------|--------|
 | Click a line number (gutter) on A or B | Select the syntax block containing that line; click again to clear |
 | `Escape` | Clear syntax-block selection |
-| **Apply** (yellow button on the first line of a selected block) | Copy the selected block from A or B into `file-c` at the matching line numbers and save |
-| `u` | Undo the most recent **Apply** (up to 100 undo steps) |
+| **Apply** (yellow button on the first line of a selected block) | Enter insert mode: click a **file C** line number to insert the block (existing lines shift down), or **Esc** to cancel |
+| `u` or **Ctrl+Z** / **⌘Z** | Undo the most recent completed **Apply** (also cancels a pending insert); up to 100 steps |
 
-`u` without Ctrl/Meta undoes **Apply** only. `Ctrl+u` / `Meta+u` still scrolls half a page up.
+Plain `u` (no Ctrl/Meta) undoes **Apply** only. **Ctrl+Z** / **⌘Z** does the same. **Ctrl+u** / **⌘u** still scrolls half a page up.
 
 ## JSON format (important)
 

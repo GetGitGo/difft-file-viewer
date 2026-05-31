@@ -172,19 +172,25 @@ fn block_source_lines(diff: &DiffFile, side: DiffSide, start: u32, end: u32) -> 
     lines
 }
 
-fn apply_block_to_file_c(view: &mut ViewData, sel: BlockSelection) -> Result<(), String> {
-    let block_lines = block_source_lines(&view.diff, sel.side, sel.start_line, sel.end_line);
+fn apply_block_to_file_c(
+    file_c_lines: &mut Vec<String>,
+    diff: &DiffFile,
+    sel: BlockSelection,
+    insert_at: usize,
+) -> Result<(), String> {
+    let block_lines: Vec<String> = block_source_lines(diff, sel.side, sel.start_line, sel.end_line)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
     if block_lines.is_empty() {
         return Err("selected syntax block has no source lines.".to_owned());
     }
-
-    let needed_len = sel.end_line as usize + 1;
-    if view.file_c_lines.len() < needed_len {
-        view.file_c_lines.resize(needed_len, String::new());
+    if insert_at > file_c_lines.len() {
+        file_c_lines.resize(insert_at, String::new());
     }
 
-    for (line_no, text) in block_lines {
-        view.file_c_lines[line_no as usize] = text;
+    for (offset, text) in block_lines.iter().enumerate() {
+        file_c_lines.insert(insert_at + offset, text.clone());
     }
     Ok(())
 }
@@ -258,7 +264,12 @@ fn center_line_for_aligned(aligned: &AlignedLine, file_c_lines: &[String]) -> (i
     (line_num(Some(line_idx)), text)
 }
 
-fn slint_line(line: &AlignedLine, view: &ViewData, sel: Option<BlockSelection>) -> DiffLine {
+fn slint_line(
+    line: &AlignedLine,
+    view: &ViewData,
+    sel: Option<BlockSelection>,
+    apply_pending: bool,
+) -> DiffLine {
     let (center_line, center_text) = if view.triple_pane {
         center_line_for_aligned(line, &view.file_c_lines)
     } else {
@@ -273,7 +284,7 @@ fn slint_line(line: &AlignedLine, view: &ViewData, sel: Option<BlockSelection>) 
         center_line,
         lhs_selected: line_in_selection(line.lhs_line, sel, DiffSide::Lhs),
         rhs_selected: line_in_selection(line.rhs_line, sel, DiffSide::Rhs),
-        center_selected: false,
+        center_selected: apply_pending && center_line >= 1,
         lhs_show_apply: show_apply_on_line(view.triple_pane, sel, DiffSide::Lhs, line.lhs_line),
         rhs_show_apply: show_apply_on_line(view.triple_pane, sel, DiffSide::Rhs, line.rhs_line),
         lhs_plain_text: line.lhs_text.clone().into(),
@@ -307,18 +318,41 @@ fn max_line_content_width(lines: &[DiffLine]) -> f32 {
     })
 }
 
-fn set_lines_on_ui(ui: &MainWindow, view: &ViewData, sel: Option<BlockSelection>) {
-    let lines = slint_lines(view, sel);
+fn set_lines_on_ui(
+    ui: &MainWindow,
+    view: &ViewData,
+    sel: Option<BlockSelection>,
+    apply_pending: bool,
+) {
+    let lines = slint_lines(view, sel, apply_pending);
     ui.set_max_content_width(max_line_content_width(&lines));
     let model: slint::ModelRc<DiffLine> = std::rc::Rc::new(slint::VecModel::from(lines)).into();
     ui.set_lines(model);
 }
 
-fn slint_lines(view: &ViewData, sel: Option<BlockSelection>) -> Vec<DiffLine> {
+fn refresh_diff_ui(
+    ui: &MainWindow,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
+) {
+    let apply_pending = pending_apply_store.lock().unwrap().is_some();
+    ui.set_apply_pending(apply_pending);
+    if let Some(view) = view_store.lock().unwrap().clone() {
+        let sel = *selection_store.lock().unwrap();
+        set_lines_on_ui(ui, &view, sel, apply_pending);
+    }
+}
+
+fn slint_lines(
+    view: &ViewData,
+    sel: Option<BlockSelection>,
+    apply_pending: bool,
+) -> Vec<DiffLine> {
     view.diff
         .aligned_lines
         .iter()
-        .map(|line| slint_line(line, view, sel))
+        .map(|line| slint_line(line, view, sel, apply_pending))
         .collect()
 }
 
@@ -335,11 +369,16 @@ fn handle_gutter_click(
     lhs_side: bool,
     view_store: &Arc<Mutex<Option<ViewData>>>,
     selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
 ) {
+    if pending_apply_store.lock().unwrap().is_some() {
+        return;
+    }
+
     if row < 0 {
         *selection_store.lock().unwrap() = None;
         if let Some(view) = view_store.lock().unwrap().clone() {
-            set_lines_on_ui(ui, &view, None);
+            set_lines_on_ui(ui, &view, None, false);
         }
         return;
     }
@@ -374,7 +413,7 @@ fn handle_gutter_click(
     let mut selection = selection_store.lock().unwrap();
     if selection.is_some_and(|prev| prev.side == side && prev.block_id == block.id) {
         *selection = None;
-        set_lines_on_ui(ui, &view, None);
+        set_lines_on_ui(ui, &view, None, false);
         return;
     }
 
@@ -385,7 +424,7 @@ fn handle_gutter_click(
         end_line: block.end_line,
     };
     *selection = Some(new_sel);
-    set_lines_on_ui(ui, &view, Some(new_sel));
+    set_lines_on_ui(ui, &view, Some(new_sel), false);
 }
 
 fn handle_apply_click(
@@ -394,9 +433,12 @@ fn handle_apply_click(
     lhs_side: bool,
     view_store: &Arc<Mutex<Option<ViewData>>>,
     selection_store: &Arc<Mutex<Option<BlockSelection>>>,
-    path_c_store: &Arc<Mutex<Option<PathBuf>>>,
-    apply_history: &Arc<Mutex<ApplyHistory>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
 ) {
+    if pending_apply_store.lock().unwrap().is_some() {
+        return;
+    }
+
     if row < 0 {
         return;
     }
@@ -433,37 +475,106 @@ fn handle_apply_click(
         return;
     }
 
+    *pending_apply_store.lock().unwrap() = Some(sel);
+    refresh_diff_ui(ui, view_store, selection_store, pending_apply_store);
+    ui.set_file_info(
+        "Click a line number in file C to insert the selection, or press Esc to cancel.".into(),
+    );
+}
+
+fn handle_center_gutter_click(
+    ui: &MainWindow,
+    row: i32,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
+    path_c_store: &Arc<Mutex<Option<PathBuf>>>,
+    apply_history: &Arc<Mutex<ApplyHistory>>,
+) {
+    let Some(sel) = pending_apply_store.lock().unwrap().take() else {
+        return;
+    };
+    if row < 0 {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    }
+
+    let Some(mut view) = view_store.lock().unwrap().clone() else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    };
+    if !view.triple_pane {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    }
+
+    let row = row as usize;
+    let Some(aligned) = view.diff.aligned_lines.get(row) else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    };
+    let insert_line = aligned.lhs_line.or(aligned.rhs_line);
+    let Some(insert_line) = insert_line else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        ui.set_file_info("Choose a file C row with a line number.".into());
+        return;
+    };
+    let insert_at = insert_line as usize;
+
     let Some(path_c) = path_c_store.lock().unwrap().clone() else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
         ui.set_file_info("Apply requires a file-c path.".into());
         return;
     };
 
-    let mut view = view;
     let snapshot = view.file_c_lines.clone();
-    match apply_block_to_file_c(&mut view, sel) {
+    match apply_block_to_file_c(&mut view.file_c_lines, &view.diff, sel, insert_at) {
         Ok(()) => {
             if let Err(err) = write_file_lines(&path_c, &view.file_c_lines) {
+                view.file_c_lines = snapshot;
+                *pending_apply_store.lock().unwrap() = Some(sel);
                 ui.set_file_info(err.into());
                 return;
             }
             apply_history.lock().unwrap().push_snapshot(&snapshot);
             *view_store.lock().unwrap() = Some(view.clone());
-            set_lines_on_ui(ui, &view, Some(sel));
-            ui.set_file_info(format!("Applied to {}.", path_c.display()).into());
+            let sel = *selection_store.lock().unwrap();
+            ui.set_apply_pending(false);
+            set_lines_on_ui(ui, &view, sel, false);
+            ui.set_file_info(format!("Applied to {} at line {}.", path_c.display(), insert_at + 1).into());
         }
         Err(err) => {
+            *pending_apply_store.lock().unwrap() = Some(sel);
+            refresh_diff_ui(ui, view_store, selection_store, pending_apply_store);
             ui.set_file_info(err.into());
         }
     }
+}
+
+fn handle_apply_cancel(
+    ui: &MainWindow,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
+) {
+    if pending_apply_store.lock().unwrap().take().is_none() {
+        return;
+    }
+    refresh_diff_ui(ui, view_store, selection_store, pending_apply_store);
+    ui.set_file_info("Apply cancelled.".into());
 }
 
 fn handle_apply_undo(
     ui: &MainWindow,
     view_store: &Arc<Mutex<Option<ViewData>>>,
     selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
     path_c_store: &Arc<Mutex<Option<PathBuf>>>,
     apply_history: &Arc<Mutex<ApplyHistory>>,
 ) {
+    pending_apply_store.lock().unwrap().take();
+    ui.set_apply_pending(false);
+
     let Some(mut view) = view_store.lock().unwrap().clone() else {
         return;
     };
@@ -489,7 +600,7 @@ fn handle_apply_undo(
 
     *view_store.lock().unwrap() = Some(view.clone());
     let sel = *selection_store.lock().unwrap();
-    set_lines_on_ui(ui, &view, sel);
+    set_lines_on_ui(ui, &view, sel, false);
     ui.set_file_info(format!("Undid last Apply on {}.", path_c.display()).into());
 }
 
@@ -507,6 +618,7 @@ fn run_diff(
     triple_pane: bool,
     view_store: Arc<Mutex<Option<ViewData>>>,
     selection_store: Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: Arc<Mutex<Option<BlockSelection>>>,
     apply_history: Arc<Mutex<ApplyHistory>>,
 ) {
     let difft_path = match difft.lock().unwrap().clone() {
@@ -551,9 +663,11 @@ fn run_diff(
                 match outcome {
                     Ok(view) => {
                         *selection_store.lock().unwrap() = None;
+                        *pending_apply_store.lock().unwrap() = None;
                         apply_history.lock().unwrap().clear();
                         *view_store.lock().unwrap() = Some(view.clone());
-                        set_lines_on_ui(&ui, &view, None);
+                        ui.set_apply_pending(false);
+                        set_lines_on_ui(&ui, &view, None, false);
                         ui.invoke_reset_diff_scroll();
                         ui.set_status_text("".into());
                         let mut info = warning_message(&view.diff).unwrap_or_default();
@@ -636,6 +750,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let difft = Arc::new(Mutex::new(probe_difft().ok()));
     let view_store: Arc<Mutex<Option<ViewData>>> = Arc::new(Mutex::new(None));
     let selection_store: Arc<Mutex<Option<BlockSelection>>> = Arc::new(Mutex::new(None));
+    let pending_apply_store: Arc<Mutex<Option<BlockSelection>>> = Arc::new(Mutex::new(None));
     let path_c_store: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(path_c.clone()));
     let apply_history: Arc<Mutex<ApplyHistory>> = Arc::new(Mutex::new(ApplyHistory::new()));
 
@@ -654,6 +769,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_handle = ui.as_weak();
         let view_store = Arc::clone(&view_store);
         let selection_store = Arc::clone(&selection_store);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
         ui.on_gutter_clicked(move |row, lhs_side| {
             if let Some(ui) = ui_handle.upgrade() {
                 handle_gutter_click(
@@ -662,6 +778,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     lhs_side,
                     &view_store,
                     &selection_store,
+                    &pending_apply_store,
                 );
             }
         });
@@ -671,8 +788,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_handle = ui.as_weak();
         let view_store = Arc::clone(&view_store);
         let selection_store = Arc::clone(&selection_store);
-        let path_c_store = Arc::clone(&path_c_store);
-        let apply_history = Arc::clone(&apply_history);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
         ui.on_apply_clicked(move |row, lhs_side| {
             if let Some(ui) = ui_handle.upgrade() {
                 handle_apply_click(
@@ -681,6 +797,27 @@ fn main() -> Result<(), slint::PlatformError> {
                     lhs_side,
                     &view_store,
                     &selection_store,
+                    &pending_apply_store,
+                );
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        let view_store = Arc::clone(&view_store);
+        let selection_store = Arc::clone(&selection_store);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
+        let path_c_store = Arc::clone(&path_c_store);
+        let apply_history = Arc::clone(&apply_history);
+        ui.on_center_gutter_clicked(move |row| {
+            if let Some(ui) = ui_handle.upgrade() {
+                handle_center_gutter_click(
+                    &ui,
+                    row,
+                    &view_store,
+                    &selection_store,
+                    &pending_apply_store,
                     &path_c_store,
                     &apply_history,
                 );
@@ -692,6 +829,24 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_handle = ui.as_weak();
         let view_store = Arc::clone(&view_store);
         let selection_store = Arc::clone(&selection_store);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
+        ui.on_apply_cancel_requested(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                handle_apply_cancel(
+                    &ui,
+                    &view_store,
+                    &selection_store,
+                    &pending_apply_store,
+                );
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        let view_store = Arc::clone(&view_store);
+        let selection_store = Arc::clone(&selection_store);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
         let path_c_store = Arc::clone(&path_c_store);
         let apply_history = Arc::clone(&apply_history);
         ui.on_apply_undo_requested(move || {
@@ -700,6 +855,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     &ui,
                     &view_store,
                     &selection_store,
+                    &pending_apply_store,
                     &path_c_store,
                     &apply_history,
                 );
@@ -717,6 +873,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let difft_store = Arc::clone(&difft);
         let view_store = Arc::clone(&view_store);
         let selection_store = Arc::clone(&selection_store);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
         let apply_history = Arc::clone(&apply_history);
         slint::Timer::single_shot(Duration::from_millis(0), move || {
             run_diff(
@@ -728,10 +885,97 @@ fn main() -> Result<(), slint::PlatformError> {
                 triple_pane,
                 view_store,
                 selection_store,
+                pending_apply_store,
                 apply_history,
             );
         });
     }
 
     ui.run()
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+
+    #[test]
+    fn insert_block_pushes_existing_lines_down() {
+        let mut file_c = vec![
+            "a".to_owned(),
+            "b".to_owned(),
+            "c".to_owned(),
+        ];
+        let diff = DiffFile {
+            path: String::new(),
+            language: String::new(),
+            status: model::DiffStatus::Changed,
+            extra_info: None,
+            aligned_lines: vec![AlignedLine {
+                lhs_line: Some(0),
+                rhs_line: Some(0),
+                lhs_text: "x".into(),
+                rhs_text: "x".into(),
+                is_novel_lhs: true,
+                is_novel_rhs: true,
+                lhs_spans: vec![],
+                rhs_spans: vec![],
+            }],
+            lhs_syntax_blocks: vec![],
+            rhs_syntax_blocks: vec![],
+        };
+        let sel = BlockSelection {
+            side: DiffSide::Lhs,
+            block_id: 0,
+            start_line: 0,
+            end_line: 0,
+        };
+
+        apply_block_to_file_c(&mut file_c, &diff, sel, 1).unwrap();
+        assert_eq!(
+            file_c,
+            vec![
+                "a".to_owned(),
+                "x".to_owned(),
+                "b".to_owned(),
+                "c".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_block_pads_to_target_line_past_eof() {
+        let mut file_c = vec!["only".to_owned()];
+        let diff = DiffFile {
+            path: String::new(),
+            language: String::new(),
+            status: model::DiffStatus::Changed,
+            extra_info: None,
+            aligned_lines: vec![AlignedLine {
+                lhs_line: Some(0),
+                rhs_line: Some(0),
+                lhs_text: "new".into(),
+                rhs_text: "new".into(),
+                is_novel_lhs: true,
+                is_novel_rhs: true,
+                lhs_spans: vec![],
+                rhs_spans: vec![],
+            }],
+            lhs_syntax_blocks: vec![],
+            rhs_syntax_blocks: vec![],
+        };
+        let sel = BlockSelection {
+            side: DiffSide::Lhs,
+            block_id: 0,
+            start_line: 0,
+            end_line: 0,
+        };
+
+        apply_block_to_file_c(&mut file_c, &diff, sel, 4).unwrap();
+        assert_eq!(file_c.len(), 5);
+        assert_eq!(file_c[0], "only");
+        assert_eq!(file_c[1], "");
+        assert_eq!(file_c[2], "");
+        assert_eq!(file_c[3], "");
+        assert_eq!(file_c[4], "new");
+    }
 }

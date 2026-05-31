@@ -123,6 +123,7 @@ component CodeSide inherits Rectangle {
     in property <bool> selected: false;
     in property <bool> show-apply: false;
     in property <bool> gutter-enabled: true;
+    in property <bool> insert-target: false;
     in property <length> line-height: 20px;
     in property <length> gutter-width: 44px;
     in property <length> code-scroll-x: 0px;
@@ -136,7 +137,9 @@ component CodeSide inherits Rectangle {
                 >= (event.delta-y < 0px ? -event.delta-y : event.delta-y)
     }
 
-    private property <brush> row-background: root.selected ? #44475a : (root.novel ? #3b3f52 : #282a36);
+    private property <bool> insert-hovered: root.insert-target && insert-row-touch.has-hover;
+    private property <brush> row-background: root.selected ? #44475a
+        : (root.insert-hovered ? #3d4f44 : (root.novel ? #3b3f52 : #282a36));
 
     horizontal-stretch: 1;
     min-width: 1px;
@@ -176,7 +179,7 @@ component CodeSide inherits Rectangle {
             vertical-alignment: center;
         }
 
-        code-scroll-touch := TouchArea {
+        if (!root.insert-target): code-scroll-touch := TouchArea {
             width: parent.width;
             height: parent.height;
 
@@ -199,21 +202,34 @@ component CodeSide inherits Rectangle {
         gutter-touch := TouchArea {
             width: parent.width;
             height: parent.height;
-            enabled: root.gutter-enabled && root.line-number >= 1;
+            enabled: !root.insert-target && root.gutter-enabled && root.line-number >= 1;
 
             clicked => {
                 root.gutter-clicked();
             }
         }
 
-        Text {
+        if (root.insert-hovered): Text {
             x: 0;
-            width: parent.width - 6px;
+            width: 11px;
+            height: root.line-height;
+            text: "▶";
+            color: #50fa7b;
+            font-size: 9px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Text {
+            x: root.insert-hovered ? 10px : 0px;
+            width: parent.width - 6px - (root.insert-hovered ? 10px : 0px);
             height: root.line-height;
             text: root.line-number >= 1 ? root.line-number : "";
-            color: root.selected ? #bd93f9 : #6272a4;
+            color: root.insert-hovered ? #50fa7b : (root.selected ? #bd93f9 : #6272a4);
             font-family: "Courier New";
             font-size: 12px;
+            font-weight: root.insert-hovered ? 700 : 400;
             horizontal-alignment: right;
             vertical-alignment: center;
             visible: !root.show-apply;
@@ -227,17 +243,30 @@ component CodeSide inherits Rectangle {
             }
         }
     }
+
+    insert-row-touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.insert-target && root.gutter-enabled && root.line-number >= 1;
+        mouse-cursor: pointer;
+
+        clicked => {
+            root.gutter-clicked();
+        }
+    }
 }
 
 component DiffCodeScrollView inherits Rectangle {
     in property <length> code-line-height;
     in property <length> line-number-width;
     in property <bool> triple-pane: false;
+    in property <bool> apply-pending: false;
     in property <[DiffLine]> lines;
     in property <length> max-content-width: 0px;
     in-out property <length> code-scroll-x: 0px;
     callback gutter-clicked(row-index: int, lhs-side: bool);
     callback apply-clicked(row-index: int, lhs-side: bool);
+    callback center-gutter-clicked(row-index: int);
 
     private property <int> column-count: root.triple-pane ? 3 : 2;
     private property <length> column-code-width: max(0px, list.width / root.column-count - root.line-number-width);
@@ -267,7 +296,7 @@ component DiffCodeScrollView inherits Rectangle {
                 segments: line.lhs-segments;
                 novel: line.lhs-novel;
                 selected: line.lhs-selected;
-                show-apply: line.lhs-show-apply;
+                show-apply: line.lhs-show-apply && !root.apply-pending;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
@@ -289,9 +318,13 @@ component DiffCodeScrollView inherits Rectangle {
                 segments: line.center-segments;
                 novel: false;
                 selected: line.center-selected;
-                gutter-enabled: false;
+                insert-target: root.apply-pending && line.center-line >= 1;
+                gutter-enabled: root.apply-pending && line.center-line >= 1;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
+                }
+                gutter-clicked => {
+                    root.center-gutter-clicked(index);
                 }
             }
 
@@ -305,7 +338,7 @@ component DiffCodeScrollView inherits Rectangle {
                 segments: line.rhs-segments;
                 novel: line.rhs-novel;
                 selected: line.rhs-selected;
-                show-apply: line.rhs-show-apply;
+                show-apply: line.rhs-show-apply && !root.apply-pending;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
@@ -378,6 +411,8 @@ export component MainWindow inherits Window {
 
     callback gutter-clicked(row-index: int, lhs-side: bool);
     callback apply-clicked(row-index: int, lhs-side: bool);
+    callback center-gutter-clicked(row-index: int);
+    callback apply-cancel-requested();
     callback apply-undo-requested();
 
     in-out property <length> toolbar-height: 28px;
@@ -389,6 +424,7 @@ export component MainWindow inherits Window {
     in-out property <string> path-b: "";
     in-out property <string> path-c: "";
     in-out property <bool> triple-pane: false;
+    in-out property <bool> apply-pending: false;
     in-out property <DiffState> diff-state: DiffState.idle;
     in-out property <string> status-text: "Select file A and file B to compare.";
     in-out property <string> file-info: "";
@@ -469,10 +505,10 @@ export component MainWindow inherits Window {
             && !root.vim-modifiers(event)
     }
 
-    pure function is-vim-apply-undo(event: KeyEvent) -> bool {
-        event.text == "u"
-            && !event.modifiers.shift
-            && !root.vim-modifiers(event)
+    pure function is-apply-undo(event: KeyEvent) -> bool {
+        event.text == "\u{001a}"
+            || (event.text == "z" && root.vim-modifiers(event) && !event.modifiers.shift)
+            || (event.text == "u" && !event.modifiers.shift && !root.vim-modifiers(event))
     }
 
     root-focus := FocusScope {
@@ -506,7 +542,7 @@ export component MainWindow inherits Window {
                 code-scroll.half-page-down();
                 return accept;
             }
-            if (root.triple-pane && root.is-vim-apply-undo(event)) {
+            if (root.triple-pane && root.is-apply-undo(event)) {
                 root.apply-undo-requested();
                 root.vim-pending-g = false;
                 return accept;
@@ -537,7 +573,11 @@ export component MainWindow inherits Window {
             }
             root.vim-pending-g = false;
             if (event.text == Key.Escape) {
-                root.gutter-clicked(-1, false);
+                if (root.apply-pending) {
+                    root.apply-cancel-requested();
+                } else {
+                    root.gutter-clicked(-1, false);
+                }
                 return accept;
             }
             return reject;
@@ -588,6 +628,7 @@ export component MainWindow inherits Window {
             code-line-height: root.code-line-height;
             line-number-width: root.line-number-width;
             triple-pane: root.triple-pane;
+            apply-pending: root.apply-pending;
             lines: root.lines;
             code-scroll-x <=> root.code-scroll-x;
             max-content-width: root.max-content-width;
@@ -596,6 +637,9 @@ export component MainWindow inherits Window {
             }
             apply-clicked(row-index, lhs-side) => {
                 root.apply-clicked(row-index, lhs-side);
+            }
+            center-gutter-clicked(row-index) => {
+                root.center-gutter-clicked(row-index);
             }
         }
         }
