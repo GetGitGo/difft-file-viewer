@@ -1,0 +1,43 @@
+# BasedOnStyle options: LLVM, Google, Chromium, Mozilla, WebKit, Microsoft
+BasedOnStyle: Google
+
+# Language target
+Language: Cpp
+
+# --- Code Layout & Spacing ---
+# 100 columns is the modern sweet spot for widescreen monitors (Google default is 80)
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# --- Brace Wrapping (The "Attach" Style preferred by modern teams) ---
+# Keeps braces on the same line as the statement to save vertical screen space
+BreakBeforeBraces: Attach
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+#AllowShortLoopsOnASingleLine: Never
+
+# --- Pointer Alignment (Modern Style: int* ptr) ---
+# Right-aligned (int *ptr) is classic C; Left-aligned (int* ptr) is modern C++
+PointerAlignment: Left
+
+# --- Cleanup & Formatting Optimizations ---
+# Automatically cleans up messy includes alphabetically
+SortIncludes: true
+
+# Keeps space around operators (e.g., x = y + z;)
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements # Space after if/for/while, but not function calls
+
+# Pack function arguments tightly unless they break the ColumnLimit
+BinPackArguments: true
+BinPackParameters: true
+
+# Format C++11 braced initializers cleanly
+Cpp11BracedListStyle: true
+
+# Ensure a newline at the end of every file
+Standard: Latest
+

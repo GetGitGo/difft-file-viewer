@@ -193,12 +193,13 @@ If any condition fails, formatting is **silently skipped** and diff uses the ori
 
 The viewer reads **`.clangformat`** (no hyphen), **not** the usual **`.clang-format`**. This avoids clashing with an existing project `.clang-format` you do not want this tool to use.
 
-Example `./.clangformat`:
+This repository ships **[`.clangformat.example`](.clangformat.example)** (Google-based, 100-column). Copy it into the directory from which you launch the viewer:
 
-```yaml
-BasedOnStyle: LLVM
-IndentWidth: 4
+```bash
+cp .clangformat.example .clangformat
 ```
+
+Edit `.clangformat` for your team style; the example file is not read automatically.
 
 ### Command executed
 
