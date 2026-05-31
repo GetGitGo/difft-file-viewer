@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Slint GUI for comparing two or three files with [difftastic](https://github.com/wilfred/difftastic).
+Slint GUI for comparing two files, or applying two files to a third, with [difftastic](https://github.com/wilfred/difftastic).
 
 The viewer optionally runs `clang-format` on C/C++ inputs, then spawns `difft`, reads `--display json` output, and renders a side-by-side (or triple-pane) view.
 
 ## How it works
 
 ```
-                    ┌─ optional: clang-format -i ─┐
-                    │  (.clangformat in cwd)      │
+                    ┌─ optional: clang-format copies ─┐
+                    │  (.clangformat in cwd)          │
                     ▼                             │
 ┌─────────────┐     subprocess      ┌──────────┐  │
 │ difft-file- │  DFT_UNSTABLE=yes   │  difft   │  │
@@ -23,7 +23,7 @@ The viewer optionally runs `clang-format` on C/C++ inputs, then spawns `difft`, 
   C/C++ input paths ◄───────────────────────────────┘
 ```
 
-1. **Pre-process (optional):** for each existing C/C++ input path, if the **current working directory** contains a non-empty **`.clangformat`** and `clang-format` is on `PATH`, run in-place formatting before diff. See [C/C++ formatting](#cc-formatting-clang-format) below.
+1. **Pre-process (optional):** for each existing C/C++ **diff input** (`file-a` / `file-b`), if the **current working directory** contains a non-empty **`.clangformat`** and `clang-format` is on `PATH`, build formatted **copies** for `difft` without modifying the originals on disk. See [C/C++ formatting](#cc-formatting-clang-format) below.
 2. **Diff:** the viewer runs (paths are `file-a` and `file-b` only; `file-c` is not passed to `difft`):
 
    ```text
@@ -173,7 +173,7 @@ difft-file-viewer file-a file-b file-c
 
 ## C/C++ formatting (`clang-format`)
 
-Before calling `difft`, the viewer may format input files in place.
+Before calling `difft`, the viewer may build formatted copies for **A / B** (diff only; originals are not modified).
 
 ### When it runs
 
@@ -181,12 +181,12 @@ All of the following must be true:
 
 | Condition | Detail |
 |-----------|--------|
-| File type | Input path is C/C++ (e.g. `.c`, `.cpp`, `.h`, `.hpp`, …) |
+| File type | `file-a` / `file-b` are C/C++ (e.g. `.c`, `.cpp`, `.h`, `.hpp`, …) |
 | Config | **`./.clangformat`** exists in the **current working directory**, is non-empty |
 | Tool | `clang-format` is available on `PATH` (`clang-format --version` succeeds) |
-| File exists | The path already exists on disk (a not-yet-created `file-c` is skipped) |
+| File exists | The path already exists on disk |
 
-If any condition fails, formatting is **silently skipped** and diff proceeds as usual.
+If any condition fails, formatting is **silently skipped** and diff uses the original files. `file-c` is never formatted (diff is still A vs B).
 
 ### Config file name
 
@@ -204,32 +204,37 @@ IndentWidth: 4
 For each file that needs formatting:
 
 ```text
-clang-format -style=file:<cwd>/.clangformat -i <file>
+clang-format -style=file:<cwd>/.clangformat <file>  →  ./.clangformat.cache.d/<hash>.<ext>
 ```
+
+Output goes under **`.clangformat.cache.d/`** in the cwd; `difft` reads the copies. **`file-a` / `file-b` on disk are unchanged.**
 
 ### Cache (skip already formatted files)
 
-To avoid running `clang-format` on every launch, the viewer maintains **`./.clangformat.cache`** (JSON) in the current working directory:
+To avoid running `clang-format` on every launch, the viewer maintains:
+
+- **`./.clangformat.cache`** (JSON index)
+- **`./.clangformat.cache.d/`** (formatted copies)
 
 | Cached field | Meaning |
 |--------------|---------|
 | `config` | mtime of `.clangformat` when last processed |
-| `entries[path]` | mtime of that input file after the last successful format |
+| `entries[path]` | mtime of the **source file** when its copy was last generated |
 
-On startup, for each C/C++ input file:
+On startup, for each C/C++ A/B input:
 
-- If **both** mtimes match the cache → **skip** `clang-format` for that file.
-- If `.clangformat` mtime changed → cache entries are cleared; all C/C++ inputs are formatted again.
-- If a file’s mtime changed → that file is formatted again; cache is updated after success.
+- If **both** config and source mtimes match the cache **and** the copy file exists → **skip** `clang-format`.
+- If `.clangformat` mtime changed → index is cleared and `.clangformat.cache.d/` is removed; all copies are regenerated.
+- If a source file’s mtime changed → that file’s copy is regenerated; cache is updated after success.
 
-**Force re-format:** delete `.clangformat.cache` (or touch `.clangformat` / the source file so mtime differs).
+**Force re-format:** delete `.clangformat.cache` and `.clangformat.cache.d/` (or touch `.clangformat` / the source file so mtime differs).
 
 ### Notes and caveats
 
 - Run the viewer from the directory where `.clangformat` lives (`cd` there first). The config path is **not** discovered relative to each source file.
-- Formatting **mutates** `file-a` / `file-b` / `file-c` on disk before diff.
-- Cache uses **mtime only** (not content hash). Two edits within the same filesystem timestamp granularity could theoretically be missed; delete the cache if you suspect stale skips.
-- Format failures are shown in the purple info area; diff still runs on whatever is on disk.
+- **Does not modify** `file-a` / `file-b` on disk; only diff uses cached copies. Apply writes text from the diff view into `file-c` (formatted text when formatting is enabled).
+- Cache uses **mtime only** (not content hash). Two edits within the same filesystem timestamp granularity could theoretically be missed; delete the cache directory if you suspect stale skips.
+- Format failures are shown in the purple info area; diff still runs on the **original** files.
 
 ## Keyboard shortcuts
 

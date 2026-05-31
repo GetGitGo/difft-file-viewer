@@ -528,14 +528,11 @@ fn run_diff(
     }
 
     std::thread::spawn(move || {
-        let mut input_paths = vec![path_a.clone(), path_b.clone()];
-        if let Some(path_c) = &path_c {
-            input_paths.push(path_c.clone());
-        }
-        let preprocess_note = clang_format_preprocess::preprocess_input_files(&input_paths);
+        let (diff_path_a, diff_path_b, preprocess_note) =
+            clang_format_preprocess::diff_input_paths(&path_a, &path_b);
 
         let outcome: Result<ViewData, String> = (|| {
-            let diff = run_difft(&difft_path, &path_a, &path_b)?;
+            let diff = run_difft(&difft_path, &diff_path_a, &diff_path_b)?;
             let file_c_lines = if triple_pane {
                 let path_c = path_c.ok_or_else(|| "internal error: missing file-c path".to_string())?;
                 open_or_create_file_lines(&path_c)?

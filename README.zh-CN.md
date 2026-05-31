@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-基于 [difftastic](https://github.com/wilfred/difftastic) 的 Slint GUI，用于对比两个或三个文件。
+基于 [difftastic](https://github.com/wilfred/difftastic) 的 Slint GUI，用于对比 2 个文件，或 Apply 2 个文件到第 3 个文件。
 
 Viewer 可对 C/C++ 输入可选执行 `clang-format`，再子进程调用 `difft`，读取 `--display json` 输出，以双栏或三栏展示 diff。
 
 ## 基本机制
 
 ```
-                    ┌─ 可选：clang-format -i ─┐
-                    │  (cwd 下 .clangformat)   │
+                    ┌─ 可选：clang-format 副本 ─┐
+                    │  (cwd 下 .clangformat)    │
                     ▼                          │
 ┌─────────────┐     subprocess      ┌──────────┐  │
 │ difft-file- │  DFT_UNSTABLE=yes   │  difft   │  │
@@ -23,7 +23,7 @@ Viewer 可对 C/C++ 输入可选执行 `clang-format`，再子进程调用 `diff
   C/C++ 输入路径 ◄──────────────────────────────────┘
 ```
 
-1. **前处理（可选）：** 对每个已存在的 C/C++ 输入路径，若**当前工作目录**下有非空 **`.clangformat`** 且 `PATH` 中有 `clang-format`，则在 diff 前原地格式化。详见 [C/C++ 格式化](#c-c-格式化-clang-format)。
+1. **前处理（可选）：** 对每个已存在的 C/C++ **diff 输入**（`file-a` / `file-b`），若**当前工作目录**下有非空 **`.clangformat`** 且 `PATH` 中有 `clang-format`，则在 diff 前生成格式化**副本**供 `difft` 使用，**不修改磁盘上的原文件**。详见 [C/C++ 格式化](#c-c-格式化-clang-format)。
 2. **Diff：** 仅对 `file-a`、`file-b` 调用（`file-c` 不参与 difft）：
 
    ```text
@@ -173,7 +173,7 @@ difft-file-viewer file-a file-b file-c
 
 ## C/C++ 格式化（`clang-format`）
 
-调用 `difft` 前，可能对输入文件做原地格式化。
+调用 `difft` 前，可能为 **A / B** 生成格式化副本（仅用于 diff，不改原文件）。
 
 ### 触发条件
 
@@ -181,12 +181,12 @@ difft-file-viewer file-a file-b file-c
 
 | 条件 | 说明 |
 |------|------|
-| 文件类型 | 输入为 C/C++（如 `.c`、`.cpp`、`.h`、`.hpp` 等） |
+| 文件类型 | `file-a` / `file-b` 为 C/C++（如 `.c`、`.cpp`、`.h`、`.hpp` 等） |
 | 配置 | **当前工作目录**下存在非空 **`./.clangformat`** |
 | 工具 | `PATH` 中有 `clang-format`（`clang-format --version` 成功） |
-| 文件存在 | 路径在磁盘上已存在（尚未创建的 `file-c` 跳过） |
+| 文件存在 | 路径在磁盘上已存在 |
 
-任一不满足则**静默跳过**格式化，照常 diff。
+任一不满足则**静默跳过**格式化，照常对原文件 diff。`file-c` 不参与格式化（diff 仍为 A vs B）。
 
 ### 配置文件名
 
@@ -204,32 +204,37 @@ IndentWidth: 4
 对每个需要格式化的文件：
 
 ```text
-clang-format -style=file:<cwd>/.clangformat -i <file>
+clang-format -style=file:<cwd>/.clangformat <file>  →  ./.clangformat.cache.d/<hash>.<ext>
 ```
+
+格式化结果写入 cwd 下的 **`.clangformat.cache.d/`**，`difft` 读副本；**`file-a` / `file-b` 原文件不变**。
 
 ### 缓存（跳过已处理文件）
 
-为避免每次启动都跑 `clang-format`，在当前工作目录维护 **`./.clangformat.cache`**（JSON）：
+为避免每次启动都跑 `clang-format`，在当前工作目录维护：
+
+- **`./.clangformat.cache`**（JSON 索引）
+- **`./.clangformat.cache.d/`**（格式化副本）
 
 | 缓存字段 | 含义 |
 |----------|------|
 | `config` | 上次处理时 `.clangformat` 的 mtime |
-| `entries[path]` | 该输入文件上次成功格式化后的 mtime |
+| `entries[path]` | 该**源文件**上次成功生成副本时的 mtime |
 
-启动时对每个 C/C++ 输入：
+启动时对每个 C/C++ 的 A/B 输入：
 
-- **配置与文件的 mtime 均与缓存一致** → 跳过 `clang-format`
-- **`.clangformat` mtime 变化** → 清空条目，所有 C/C++ 输入重新格式化
-- **某文件 mtime 变化** → 仅该文件重新格式化，成功后更新缓存
+- **配置与源文件 mtime 均与缓存一致**，且副本文件存在 → 跳过 `clang-format`
+- **`.clangformat` mtime 变化** → 清空索引并删除 `.clangformat.cache.d/`，全部重新生成
+- **某源文件 mtime 变化** → 仅该文件重新生成副本，成功后更新缓存
 
-**强制全量重跑：** 删除 `.clangformat.cache`，或 touch 配置/源文件使 mtime 变化。
+**强制全量重跑：** 删除 `.clangformat.cache` 与 `.clangformat.cache.d/`，或 touch 配置/源文件使 mtime 变化。
 
 ### 注意
 
 - 请在放有 `.clangformat` 的目录下启动 viewer（先 `cd`）；配置**不是**按每个源文件路径向上查找。
-- 格式化会**改写**磁盘上的 `file-a` / `file-b` / `file-c`，再 diff。
-- 缓存仅比较 **mtime**（不算内容 hash）；极短时间内多次改写且 mtime 未变时可能误判，可删缓存。
-- 格式化失败会在紫色信息区提示；diff 仍基于当前磁盘内容继续。
+- **不修改** `file-a` / `file-b` 原文件；仅 diff 使用缓存副本。Apply 写入 `file-c` 的内容来自 diff 视图（若启用格式化，即为格式化后的文本）。
+- 缓存仅比较 **mtime**（不算内容 hash）；极短时间内多次改写且 mtime 未变时可能误判，可删缓存目录。
+- 格式化失败会在紫色信息区提示；diff 仍基于**原文件**继续。
 
 ## 快捷键
 

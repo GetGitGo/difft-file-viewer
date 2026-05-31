@@ -1,5 +1,6 @@
 # clang-format preprocess (written to cwd when running the viewer)
 .clangformat.cache
+.clangformat.cache.d/
 
 # Optional local format config for dev/testing (see README; not shipped with the crate)
 .clangformat
