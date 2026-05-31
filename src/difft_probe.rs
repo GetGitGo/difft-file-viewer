@@ -83,10 +83,10 @@ fn candidate_paths() -> Vec<PathBuf> {
 }
 
 fn path_lookup_hint() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let lookup = Command::new("where").arg("difft").output().ok()?;
-    #[cfg(not(windows))]
-    let lookup = Command::new("which").arg("difft").output().ok()?;
+    let lookup = subprocess_command(if cfg!(windows) { "where" } else { "which" })
+        .arg("difft")
+        .output()
+        .ok()?;
 
     if !lookup.status.success() {
         return None;

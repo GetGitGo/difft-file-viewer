@@ -1,3 +1,6 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// Release Windows builds use the GUI subsystem (no extra console window).
+
 mod clang_format_preprocess;
 mod difft_probe;
 mod model;
@@ -77,37 +80,34 @@ impl ApplyHistory {
     }
 }
 
-fn cli_args() -> CliArgs {
+fn cli_usage_error(got: usize) -> String {
+    let detail = match got {
+        0 => "at least two file paths are required.".to_string(),
+        1 => "at least two file paths are required (got 1).".to_string(),
+        n => format!("expected 2 or 3 file paths (got {n})."),
+    };
+    format!("{}\n\nError: {detail}", usage())
+}
+
+fn parse_cli_args() -> Result<CliArgs, String> {
     let paths: Vec<PathBuf> = env::args_os().skip(1).map(PathBuf::from).collect();
     match paths.len() {
-        2 => CliArgs {
+        2 => Ok(CliArgs {
             path_a: paths[0].clone(),
             path_b: paths[1].clone(),
             path_c: None,
-        },
-        3 => CliArgs {
+        }),
+        3 => Ok(CliArgs {
             path_a: paths[0].clone(),
             path_b: paths[1].clone(),
             path_c: Some(paths[2].clone()),
-        },
-        _ => require_cli_files(paths.len()),
+        }),
+        got => Err(cli_usage_error(got)),
     }
 }
 
 fn usage() -> &'static str {
     "Usage: difft-file-viewer <file-a> <file-b> [<file-c>]"
-}
-
-fn require_cli_files(got: usize) -> ! {
-    eprintln!("{}", usage());
-    if got == 0 {
-        eprintln!("Error: at least two file paths are required.");
-    } else if got == 1 {
-        eprintln!("Error: at least two file paths are required (got 1).");
-    } else {
-        eprintln!("Error: expected 2 or 3 file paths (got {got}).");
-    }
-    std::process::exit(1);
 }
 
 fn full_path(path: PathBuf) -> PathBuf {
@@ -602,19 +602,33 @@ fn maximize_on_startup(ui: &MainWindow) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    let cli = cli_args();
-    let triple_pane = cli.path_c.is_some();
-
+    let cli = parse_cli_args();
     let ui = MainWindow::new()?;
     maximize_on_startup(&ui);
-    ui.set_triple_pane(triple_pane);
 
-    let path_a = full_path(cli.path_a);
-    let path_b = full_path(cli.path_b);
-    let path_c = cli.path_c.map(full_path);
+    let (path_a, path_b, path_c, triple_pane) = match &cli {
+        Ok(args) => {
+            ui.set_triple_pane(args.path_c.is_some());
+            (
+                Some(full_path(args.path_a.clone())),
+                Some(full_path(args.path_b.clone())),
+                args.path_c.clone().map(full_path),
+                args.path_c.is_some(),
+            )
+        }
+        Err(err) => {
+            ui.set_triple_pane(false);
+            ui.set_file_info(err.clone().into());
+            (None, None, None, false)
+        }
+    };
 
-    set_path_label(&ui, MainWindow::set_path_a, path_a.clone());
-    set_path_label(&ui, MainWindow::set_path_b, path_b.clone());
+    if let Some(path_a) = &path_a {
+        set_path_label(&ui, MainWindow::set_path_a, path_a.clone());
+    }
+    if let Some(path_b) = &path_b {
+        set_path_label(&ui, MainWindow::set_path_b, path_b.clone());
+    }
     if let Some(path_c) = &path_c {
         set_path_label(&ui, MainWindow::set_path_c, path_c.clone());
     }
@@ -625,13 +639,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let path_c_store: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(path_c.clone()));
     let apply_history: Arc<Mutex<ApplyHistory>> = Arc::new(Mutex::new(ApplyHistory::new()));
 
-    match difft.lock().unwrap().as_ref() {
-        Some(path) => {
-            ui.set_status_text(format!("Using difft: {}", path.display()).into());
-        }
-        None => {
+    match (&cli, difft.lock().unwrap().as_ref()) {
+        (Err(_), _) => {}
+        (_, None) => {
             ui.set_status_text("difft not found.".into());
             ui.set_file_info(install_message().into());
+        }
+        (Ok(_), Some(path)) => {
+            ui.set_status_text(format!("Using difft: {}", path.display()).into());
         }
     }
 
@@ -692,7 +707,12 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    if difft.lock().unwrap().is_some() {
+    if let (Ok(_), Some(path_a), Some(path_b), true) = (
+        &cli,
+        path_a,
+        path_b,
+        difft.lock().unwrap().is_some(),
+    ) {
         let ui_handle = ui.as_weak();
         let difft_store = Arc::clone(&difft);
         let view_store = Arc::clone(&view_store);

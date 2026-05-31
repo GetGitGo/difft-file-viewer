@@ -55,6 +55,7 @@ Viewer 会在子进程中设置 `DFT_UNSTABLE=yes`，因为 JSON 输出在上游
 | 方面 | Windows 处理（源码） |
 |------|----------------------|
 | GUI | Slint `backend-winit` + `renderer-femtovg`（支持 Windows） |
+| Release 二进制 | `windows_subsystem = "windows"` — 启动时不额外弹出控制台 |
 | 查找 `difft` | `difft.exe` 名称、`where difft`、`DIFT_PATH` 可带 `.exe` 后缀 |
 | 子进程 | `CREATE_NO_WINDOW`，避免弹出控制台（`difft_probe.rs`） |
 | 路径 / CLI | `std::path` + `args_os()`，无硬编码 `/` 分隔符 |

@@ -55,6 +55,7 @@ The crate is **cross-platform** (macOS, Linux, Windows). There is no Unix-only G
 | Area | Windows handling (in source) |
 |------|------------------------------|
 | GUI | Slint `backend-winit` + `renderer-femtovg` (Windows supported) |
+| Release binary | `windows_subsystem = "windows"` — no extra console window on launch |
 | `difft` lookup | `difft.exe` name, `where difft`, optional `.exe` suffix on `DIFT_PATH` |
 | Subprocess | `CREATE_NO_WINDOW` so `difft` does not flash a console (`difft_probe.rs`) |
 | Paths / CLI | `std::path` + `args_os()` — no hard-coded `/` separators |
