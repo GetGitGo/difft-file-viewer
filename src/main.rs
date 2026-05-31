@@ -5,6 +5,8 @@ mod clang_format_preprocess;
 mod difft_probe;
 mod model;
 mod segments;
+#[cfg(target_os = "macos")]
+mod macos_icon;
 
 slint::include_modules!();
 
@@ -784,11 +786,20 @@ fn maximize_on_startup(ui: &MainWindow) {
     });
 }
 
+#[cfg(target_os = "macos")]
+fn schedule_application_icon() {
+    let _ = slint::invoke_from_event_loop(move || {
+        macos_icon::set_from_png(include_bytes!("../assets/icons/icon-512.png"));
+    });
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let cli = parse_cli_args();
     let ui = MainWindow::new()?;
     init_gutter_colors(&ui);
     maximize_on_startup(&ui);
+    #[cfg(target_os = "macos")]
+    schedule_application_icon();
 
     let (path_a, path_b, path_c, triple_pane) = match &cli {
         Ok(args) => {

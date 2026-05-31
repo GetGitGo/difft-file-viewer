@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- difft-file-viewer icon: difftastic favicon (MIT) + viewer glasses overlay.
+     Lenses: fill-opacity 0.2 (80% transparent). Frame/temples: fully opaque. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <g transform="translate(256 256) scale(0.82) translate(-256 -256)">
+  <rect width="512" height="512" rx="96" fill="#282a36"/>
+
+  <!-- difftastic favicon, scaled from 16x16 -->
+  <g transform="translate(256 248) scale(28) translate(-8 -8)">
+    <path
+      d="M0 0 C0.86625 -0.00773438 1.7325 -0.01546875 2.625 -0.0234375 C5 0.375 5 0.375 6.7890625 1.5859375 C8.39038277 3.95175906 8.40035579 5.53515158 8.375 8.375 C8.38273437 9.24125 8.39046875 10.1075 8.3984375 11 C8 13.375 8 13.375 6.7890625 15.1640625 C4.42324094 16.76538277 2.83984842 16.77535579 0 16.75 C-0.86625 16.75773437 -1.7325 16.76546875 -2.625 16.7734375 C-5 16.375 -5 16.375 -6.7890625 15.1640625 C-8.39038277 12.79824094 -8.40035579 11.21484842 -8.375 8.375 C-8.38273438 7.50875 -8.39046875 6.6425 -8.3984375 5.75 C-8 3.375 -8 3.375 -6.7890625 1.5859375 C-4.42324094 -0.01538277 -2.83984842 -0.02535579 0 0 Z"
+      fill="#8AE234"
+      transform="translate(8,-0.375)"/>
+    <path
+      d="M0 0 C0 5.28 0 10.56 0 16 C-5 16 -5 16 -6.7890625 14.8125 C-8.38009461 12.43108419 -8.40042889 10.84803599 -8.375 8 C-8.38273437 7.13375 -8.39046875 6.2675 -8.3984375 5.375 C-8 3 -8 3 -6.7890625 1.1875 C-5 -0 -5 -0 0 0 Z"
+      fill="#EF2929"
+      transform="translate(8,0)"/>
+  </g>
+
+  <!-- Glasses: lenses 80% transparent; frame/temples opaque -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- lens glass (80% transparent, fill-opacity 0.2) -->
+    <circle cx="190" cy="268" r="58" fill="#f8f8f2" fill-opacity="0.2" stroke="none"/>
+    <circle cx="322" cy="268" r="58" fill="#f8f8f2" fill-opacity="0.2" stroke="none"/>
+
+    <!-- frame + bridge + temples (0% transparent) -->
+    <g stroke="#f8f8f2" stroke-width="14">
+      <circle cx="190" cy="268" r="58"/>
+      <circle cx="322" cy="268" r="58"/>
+      <path d="M 248 250 Q 256 262 264 250"/>
+      <path d="M 132 268 L 72 268"/>
+      <path d="M 72 268 L 58 282"/>
+      <path d="M 380 268 L 440 268"/>
+      <path d="M 440 268 L 454 282"/>
+    </g>
+  </g>
+  </g>
+</svg>

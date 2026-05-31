@@ -5,5 +5,9 @@
 # Optional local format config for dev/testing (see README; not shipped with the crate)
 .clangformat
 
+# Generated from assets/icon.svg in build.rs
+/assets/icons/*
+!/assets/icons/.gitkeep
+
 # Crate-local cargo output if built outside workspace /target
 /target/
