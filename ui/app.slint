@@ -128,6 +128,13 @@ component CodeSide inherits Rectangle {
     in property <length> code-scroll-x: 0px;
     callback gutter-clicked();
     callback apply-clicked();
+    callback horizontal-scroll(delta: length);
+
+    pure function is-horizontal-scroll(event: PointerScrollEvent) -> bool {
+        (event.delta-x < 0px ? -event.delta-x : event.delta-x) > 0px
+            && (event.delta-x < 0px ? -event.delta-x : event.delta-x)
+                >= (event.delta-y < 0px ? -event.delta-y : event.delta-y)
+    }
 
     private property <brush> row-background: root.selected ? #44475a : (root.novel ? #3b3f52 : #282a36);
 
@@ -167,6 +174,19 @@ component CodeSide inherits Rectangle {
             font-weight: seg.bold ? 700 : 400;
             font-italic: seg.italic;
             vertical-alignment: center;
+        }
+
+        code-scroll-touch := TouchArea {
+            width: parent.width;
+            height: parent.height;
+
+            scroll-event(event) => {
+                if (root.is-horizontal-scroll(event)) {
+                    root.horizontal-scroll(-event.delta-x);
+                    return accept;
+                }
+                return reject;
+            }
         }
     }
 
@@ -248,6 +268,9 @@ component DiffCodeScrollView inherits Rectangle {
                 novel: line.lhs-novel;
                 selected: line.lhs-selected;
                 show-apply: line.lhs-show-apply;
+                horizontal-scroll(delta) => {
+                    root.scroll-code-horizontal(delta);
+                }
                 gutter-clicked => {
                     root.gutter-clicked(index, true);
                 }
@@ -267,6 +290,9 @@ component DiffCodeScrollView inherits Rectangle {
                 novel: false;
                 selected: line.center-selected;
                 gutter-enabled: false;
+                horizontal-scroll(delta) => {
+                    root.scroll-code-horizontal(delta);
+                }
             }
 
             CodeSide {
@@ -280,6 +306,9 @@ component DiffCodeScrollView inherits Rectangle {
                 novel: line.rhs-novel;
                 selected: line.rhs-selected;
                 show-apply: line.rhs-show-apply;
+                horizontal-scroll(delta) => {
+                    root.scroll-code-horizontal(delta);
+                }
                 gutter-clicked => {
                     root.gutter-clicked(index, false);
                 }
