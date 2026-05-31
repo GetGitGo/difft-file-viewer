@@ -1,0 +1,574 @@
+import { VerticalBox, HorizontalBox, ListView } from "std-widgets.slint";
+
+export struct TextSegment {
+    text: string,
+    color: brush,
+    bold: bool,
+    italic: bool,
+    x-offset: length,
+}
+
+export struct DiffLine {
+    lhs-novel: bool,
+    rhs-novel: bool,
+    lhs-line: int,
+    rhs-line: int,
+    center-line: int,
+    lhs-selected: bool,
+    rhs-selected: bool,
+    center-selected: bool,
+    lhs-show-apply: bool,
+    rhs-show-apply: bool,
+    lhs-plain-text: string,
+    rhs-plain-text: string,
+    center-plain-text: string,
+    lhs-content-width: length,
+    rhs-content-width: length,
+    center-content-width: length,
+    lhs-segments: [TextSegment],
+    rhs-segments: [TextSegment],
+    center-segments: [TextSegment],
+}
+
+export enum DiffState {
+    idle,
+    diffing,
+    diffed,
+}
+
+component PathLabel inherits Rectangle {
+    in property <string> path: "";
+
+    background: #44475a;
+    border-radius: 4px;
+    horizontal-stretch: 1;
+    min-width: 1px;
+
+    Text {
+        text: root.path == "" ? "—" : root.path;
+        color: #f8f8f2;
+        font-size: 12px;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+        overflow: elide;
+        x: 8px;
+        width: parent.width - 16px;
+    }
+}
+
+component ApplyButton inherits Rectangle {
+    callback clicked();
+
+    width: 42px;
+    height: 17px;
+
+    private property <brush> face-color: apply-touch.pressed ? #f9d423 : (apply-touch.has-hover ? #fff176 : #ffea00);
+    private property <length> face-y: apply-touch.pressed ? 1px : 0px;
+
+    // 底部阴影，制造凸出感
+    Rectangle {
+        x: 1px;
+        y: 2px;
+        width: parent.width - 1px;
+        height: parent.height - 1px;
+        background: #9a7b00;
+        border-radius: 4px;
+    }
+
+    face := Rectangle {
+        y: root.face-y;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        background: root.face-color;
+        border-radius: 4px;
+
+        // 顶部高光
+        Rectangle {
+            height: 45%;
+            background: #fff9c4;
+            border-radius: 4px;
+        }
+
+        // 底部暗边
+        Rectangle {
+            y: parent.height - 2px;
+            height: 2px;
+            background: #e6b800;
+            border-radius: 2px;
+        }
+    }
+
+    apply-touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    Text {
+        text: "Apply";
+        color: #1a1400;
+        font-size: 10px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component CodeSide inherits Rectangle {
+    in property <int> line-number: -1;
+    in property <string> plain-text;
+    in property <brush> plain-color;
+    in property <[TextSegment]> segments;
+    in property <bool> novel;
+    in property <bool> selected: false;
+    in property <bool> show-apply: false;
+    in property <bool> gutter-enabled: true;
+    in property <length> line-height: 20px;
+    in property <length> gutter-width: 44px;
+    in property <length> code-scroll-x: 0px;
+    callback gutter-clicked();
+    callback apply-clicked();
+
+    private property <brush> row-background: root.selected ? #44475a : (root.novel ? #3b3f52 : #282a36);
+
+    horizontal-stretch: 1;
+    min-width: 1px;
+    height: root.line-height;
+    background: root.row-background;
+    clip: true;
+
+    code-panel := Rectangle {
+        x: root.gutter-width;
+        width: parent.width - root.gutter-width;
+        height: root.line-height;
+        background: root.row-background;
+        clip: true;
+
+        Text {
+            x: -root.code-scroll-x;
+            height: root.line-height;
+            text: root.plain-text;
+            color: root.plain-color;
+            font-family: "Courier New";
+            font-size: 12px;
+            wrap: no-wrap;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+            visible: root.plain-text != "" && root.segments.length == 0;
+        }
+
+        for seg in root.segments: Text {
+            x: seg.x-offset - root.code-scroll-x;
+            height: root.line-height;
+            text: seg.text;
+            color: seg.color;
+            font-family: "Courier New";
+            font-size: 12px;
+            font-weight: seg.bold ? 700 : 400;
+            font-italic: seg.italic;
+            vertical-alignment: center;
+        }
+    }
+
+    gutter := Rectangle {
+        x: 0;
+        width: root.gutter-width;
+        height: root.line-height;
+        background: root.row-background;
+
+        gutter-touch := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            enabled: root.gutter-enabled && root.line-number >= 1;
+
+            clicked => {
+                root.gutter-clicked();
+            }
+        }
+
+        Text {
+            x: 0;
+            width: parent.width - 6px;
+            height: root.line-height;
+            text: root.line-number >= 1 ? root.line-number : "";
+            color: root.selected ? #bd93f9 : #6272a4;
+            font-family: "Courier New";
+            font-size: 12px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            visible: !root.show-apply;
+        }
+
+        if (root.show-apply): ApplyButton {
+            x: 1px;
+            y: (root.line-height - 17px) / 2;
+            clicked => {
+                root.apply-clicked();
+            }
+        }
+    }
+}
+
+component DiffCodeScrollView inherits Rectangle {
+    in property <length> code-line-height;
+    in property <length> line-number-width;
+    in property <bool> triple-pane: false;
+    in property <[DiffLine]> lines;
+    in property <length> max-content-width: 0px;
+    in-out property <length> code-scroll-x: 0px;
+    callback gutter-clicked(row-index: int, lhs-side: bool);
+    callback apply-clicked(row-index: int, lhs-side: bool);
+
+    private property <int> column-count: root.triple-pane ? 3 : 2;
+    private property <length> column-code-width: max(0px, list.width / root.column-count - root.line-number-width);
+    private property <length> scroll-max-x: max(0px, root.max-content-width - column-code-width);
+
+    vertical-stretch: 1;
+    horizontal-stretch: 1;
+    clip: true;
+
+    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height);
+
+    list := ListView {
+        width: parent.width;
+        height: parent.height;
+
+        for line[index] in root.lines: HorizontalBox {
+            height: root.code-line-height;
+            spacing: 0px;
+
+            CodeSide {
+                line-height: root.code-line-height;
+                gutter-width: root.line-number-width;
+                code-scroll-x: root.code-scroll-x;
+                line-number: line.lhs-line;
+                plain-text: line.lhs-plain-text;
+                plain-color: line.lhs-novel ? #ff5555 : #f8f8f2;
+                segments: line.lhs-segments;
+                novel: line.lhs-novel;
+                selected: line.lhs-selected;
+                show-apply: line.lhs-show-apply;
+                gutter-clicked => {
+                    root.gutter-clicked(index, true);
+                }
+                apply-clicked => {
+                    root.apply-clicked(index, true);
+                }
+            }
+
+            if (root.triple-pane): CodeSide {
+                line-height: root.code-line-height;
+                gutter-width: root.line-number-width;
+                code-scroll-x: root.code-scroll-x;
+                line-number: line.center-line;
+                plain-text: line.center-plain-text;
+                plain-color: #f8f8f2;
+                segments: line.center-segments;
+                novel: false;
+                selected: line.center-selected;
+                gutter-enabled: false;
+            }
+
+            CodeSide {
+                line-height: root.code-line-height;
+                gutter-width: root.line-number-width;
+                code-scroll-x: root.code-scroll-x;
+                line-number: line.rhs-line;
+                plain-text: line.rhs-plain-text;
+                plain-color: line.rhs-novel ? #50fa7b : #f8f8f2;
+                segments: line.rhs-segments;
+                novel: line.rhs-novel;
+                selected: line.rhs-selected;
+                show-apply: line.rhs-show-apply;
+                gutter-clicked => {
+                    root.gutter-clicked(index, false);
+                }
+                apply-clicked => {
+                    root.apply-clicked(index, false);
+                }
+            }
+        }
+    }
+
+    changed max-content-width => {
+        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+    }
+
+    changed scroll-max-x => {
+        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+    }
+
+    public function reset-scroll() {
+        list.viewport-y = 0px;
+        root.code-scroll-x = 0px;
+    }
+
+    public function scroll-code-left() {
+        root.code-scroll-x = max(0px, root.code-scroll-x - 48px);
+    }
+
+    public function scroll-code-right() {
+        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + 48px);
+    }
+
+    public function scroll-code-horizontal(delta: length) {
+        root.code-scroll-x = min(root.scroll-max-x, max(0px, root.code-scroll-x + delta));
+    }
+
+    public function page-up() {
+        list.viewport-y = min(0px, list.viewport-y + list.visible-height);
+    }
+
+    public function page-down() {
+        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height);
+    }
+
+    public function half-page-up() {
+        list.viewport-y = min(0px, list.viewport-y + list.visible-height / 2);
+    }
+
+    public function half-page-down() {
+        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height / 2);
+    }
+
+    public function scroll-to-top() {
+        list.viewport-y = 0px;
+    }
+
+    public function scroll-to-bottom() {
+        list.viewport-y = scroll-min-y;
+    }
+}
+
+export component MainWindow inherits Window {
+    preferred-width: 2560px;
+    preferred-height: 1440px;
+    title: "Difftastic File Diff";
+    background: #282a36;
+    forward-focus: root-focus;
+
+    callback gutter-clicked(row-index: int, lhs-side: bool);
+    callback apply-clicked(row-index: int, lhs-side: bool);
+    callback apply-undo-requested();
+
+    in-out property <length> toolbar-height: 28px;
+    in-out property <length> toolbar-gap: 6px;
+    in-out property <length> code-line-height: 20px;
+    in-out property <length> line-number-width: 44px;
+
+    in-out property <string> path-a: "";
+    in-out property <string> path-b: "";
+    in-out property <string> path-c: "";
+    in-out property <bool> triple-pane: false;
+    in-out property <DiffState> diff-state: DiffState.idle;
+    in-out property <string> status-text: "Select file A and file B to compare.";
+    in-out property <string> file-info: "";
+    in-out property <[DiffLine]> lines;
+    in-out property <length> code-scroll-x: 0px;
+    in-out property <length> max-content-width: 0px;
+    private property <bool> vim-pending-g: false;
+
+    changed diff-state => {
+        if (root.diff-state == DiffState.diffed) {
+            root-focus.focus();
+        }
+    }
+
+    public function focus-diff-panel() {
+        root-focus.focus();
+    }
+
+    public function reset-diff-scroll() {
+        code-scroll.reset-scroll();
+    }
+
+    public function scroll-code-left() {
+        code-scroll.scroll-code-left();
+    }
+
+    public function scroll-code-right() {
+        code-scroll.scroll-code-right();
+    }
+
+    public function scroll-code-horizontal(delta: length) {
+        code-scroll.scroll-code-horizontal(delta);
+    }
+
+    pure function is-scroll-code-left(event: KeyEvent) -> bool {
+        event.text == "h" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
+    pure function is-scroll-code-right(event: KeyEvent) -> bool {
+        event.text == "l" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
+    // Physical Ctrl on macOS is reported as meta; Ctrl+letter may be a control character.
+    pure function vim-modifiers(event: KeyEvent) -> bool {
+        event.modifiers.control || event.modifiers.meta
+    }
+
+    pure function is-vim-page-up(event: KeyEvent) -> bool {
+        event.text == Key.PageUp
+            || event.text == "\u{0002}"
+            || (root.vim-modifiers(event) && (event.text == "b" || event.text == "B"))
+    }
+
+    pure function is-vim-page-down(event: KeyEvent) -> bool {
+        event.text == Key.PageDown
+            || event.text == "\u{0006}"
+            || (root.vim-modifiers(event) && (event.text == "f" || event.text == "F"))
+    }
+
+    pure function is-vim-half-page-up(event: KeyEvent) -> bool {
+        event.text == "\u{0015}"
+            || (root.vim-modifiers(event) && (event.text == "u" || event.text == "U"))
+    }
+
+    pure function is-vim-half-page-down(event: KeyEvent) -> bool {
+        event.text == "\u{0004}"
+            || (root.vim-modifiers(event) && (event.text == "d" || event.text == "D"))
+    }
+
+    pure function is-vim-go-bottom(event: KeyEvent) -> bool {
+        event.text == "G"
+            || (event.text == "g" && event.modifiers.shift)
+    }
+
+    pure function is-vim-go-top-g(event: KeyEvent) -> bool {
+        event.text == "g"
+            && !event.modifiers.shift
+            && !root.vim-modifiers(event)
+    }
+
+    pure function is-vim-apply-undo(event: KeyEvent) -> bool {
+        event.text == "u"
+            && !event.modifiers.shift
+            && !root.vim-modifiers(event)
+    }
+
+    root-focus := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        key-pressed(event) => {
+            if (root.is-scroll-code-left(event)) {
+                root.scroll-code-left();
+                root.vim-pending-g = false;
+                return accept;
+            }
+            if (root.is-scroll-code-right(event)) {
+                root.scroll-code-right();
+                root.vim-pending-g = false;
+                return accept;
+            }
+            if (root.is-vim-page-up(event)) {
+                code-scroll.page-up();
+                return accept;
+            }
+            if (root.is-vim-page-down(event)) {
+                code-scroll.page-down();
+                return accept;
+            }
+            if (root.is-vim-half-page-up(event)) {
+                code-scroll.half-page-up();
+                return accept;
+            }
+            if (root.is-vim-half-page-down(event)) {
+                code-scroll.half-page-down();
+                return accept;
+            }
+            if (root.triple-pane && root.is-vim-apply-undo(event)) {
+                root.apply-undo-requested();
+                root.vim-pending-g = false;
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                code-scroll.scroll-to-top();
+                root.vim-pending-g = false;
+                return accept;
+            }
+            if (event.text == Key.End) {
+                code-scroll.scroll-to-bottom();
+                root.vim-pending-g = false;
+                return accept;
+            }
+            if (root.is-vim-go-bottom(event)) {
+                code-scroll.scroll-to-bottom();
+                root.vim-pending-g = false;
+                return accept;
+            }
+            if (root.is-vim-go-top-g(event)) {
+                if (root.vim-pending-g) {
+                    code-scroll.scroll-to-top();
+                    root.vim-pending-g = false;
+                } else {
+                    root.vim-pending-g = true;
+                }
+                return accept;
+            }
+            root.vim-pending-g = false;
+            if (event.text == Key.Escape) {
+                root.gutter-clicked(-1, false);
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalBox {
+        padding: 6px;
+        spacing: 4px;
+
+        toolbar := HorizontalBox {
+            height: root.toolbar-height;
+            spacing: root.toolbar-gap;
+
+            PathLabel {
+                height: root.toolbar-height;
+                path: root.path-a;
+            }
+
+            if (root.triple-pane): PathLabel {
+                height: root.toolbar-height;
+                path: root.path-c;
+            }
+
+            PathLabel {
+                height: root.toolbar-height;
+                path: root.path-b;
+            }
+        }
+
+        Text {
+            text: root.status-text;
+            color: #f8f8f2;
+            font-size: 12px;
+            wrap: word-wrap;
+            visible: root.status-text != "";
+        }
+
+        Text {
+            text: root.file-info;
+            color: #bd93f9;
+            font-size: 12px;
+            wrap: word-wrap;
+            visible: root.file-info != "";
+        }
+
+        code-scroll := DiffCodeScrollView {
+            vertical-stretch: 1;
+            code-line-height: root.code-line-height;
+            line-number-width: root.line-number-width;
+            triple-pane: root.triple-pane;
+            lines: root.lines;
+            code-scroll-x <=> root.code-scroll-x;
+            max-content-width: root.max-content-width;
+            gutter-clicked(row-index, lhs-side) => {
+                root.gutter-clicked(row-index, lhs-side);
+            }
+            apply-clicked(row-index, lhs-side) => {
+                root.apply-clicked(row-index, lhs-side);
+            }
+        }
+        }
+    }
+}
