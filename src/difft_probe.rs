@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// `CREATE_NO_WINDOW` — avoid flashing a console when spawning a subprocess on Windows.
 #[cfg(windows)]
@@ -18,6 +18,21 @@ pub fn subprocess_command<S: AsRef<OsStr>>(program: S) -> Command {
     }
     #[cfg(not(windows))]
     Command::new(program)
+}
+
+/// Spawn a subprocess that should outlive the parent (quit-time format worker).
+pub fn spawn_detached_command<S: AsRef<OsStr>>(program: S) -> Command {
+    let mut cmd = subprocess_command(program);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
+    cmd
 }
 
 /// Build a subprocess command for `difft` without spawning a console on Windows.

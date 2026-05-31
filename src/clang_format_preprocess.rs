@@ -28,6 +28,54 @@ struct FormatCache {
     entries: HashMap<String, FileMtime>,
 }
 
+/// Same gate as diff pre-process: non-empty `./.clangformat` in cwd and `clang-format` on `PATH`.
+pub fn formatting_enabled() -> bool {
+    non_empty_clang_format_in_cwd().is_some() && clang_format_available()
+}
+
+/// Returns whether `q` quit should spawn a background format for `file_c`.
+pub fn should_format_file_c(path_c: &Path) -> bool {
+    formatting_enabled() && is_c_cpp_file(path_c)
+}
+
+/// Format `file_c` contents when [formatting_enabled] and `path_c` is C/C++.
+///
+/// Returns `None` when formatting should be skipped silently.
+pub fn try_format_file_c(path_c: &Path, lines: &[String]) -> Option<Result<Vec<String>, String>> {
+    if !formatting_enabled() || !is_c_cpp_file(path_c) {
+        return None;
+    }
+    let config = non_empty_clang_format_in_cwd()?;
+    Some(format_lines_in_memory(&config, path_c, lines))
+}
+
+/// Sync `file_c` to disk, then spawn a detached `clang-format -i` using `./.clangformat`.
+pub fn spawn_detached_format_file_c(path_c: &Path, lines: &[String]) -> Result<(), String> {
+    if !should_format_file_c(path_c) {
+        return Ok(());
+    }
+    let config = non_empty_clang_format_in_cwd()
+        .ok_or_else(|| "missing non-empty .clangformat in cwd".to_owned())?;
+    write_lines(path_c, lines)?;
+    let style = format!("-style=file:{}", config.display());
+    crate::difft_probe::spawn_detached_command(CLANG_FORMAT)
+        .arg(style)
+        .arg("-i")
+        .arg(path_c)
+        .spawn()
+        .map_err(|e| format!("failed to spawn clang-format: {e}"))?;
+    Ok(())
+}
+
+fn write_lines(path: &Path, lines: &[String]) -> Result<(), String> {
+    let content = if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n")
+    };
+    fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
 /// Returns paths to pass to `difft` for A and B.
 ///
 /// When formatting is enabled, writes formatted **copies** under `./.clangformat.cache.d/`
@@ -193,6 +241,43 @@ fn clang_format_available() -> bool {
         .unwrap_or(false)
 }
 
+fn format_lines_in_memory(
+    config: &Path,
+    path_hint: &Path,
+    lines: &[String],
+) -> Result<Vec<String>, String> {
+    let cwd = env::current_dir().map_err(|e| format!("clang-format skipped: {e}"))?;
+    let ext = path_hint
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("txt");
+    let cache_dir = cwd.join(CLANG_FORMAT_CACHE_DIR);
+    fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("failed to create {}: {e}", cache_dir.display()))?;
+    let temp_in = cache_dir.join(format!("_file_c_in_{}.{ext}", std::process::id()));
+    let temp_out = cache_dir.join(format!("_file_c_out_{}.{ext}", std::process::id()));
+
+    let content = if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n")
+    };
+    fs::write(&temp_in, content).map_err(|e| format!("failed to write {}: {e}", temp_in.display()))?;
+
+    format_file_to_cache(config, &temp_in, &temp_out)?;
+
+    let formatted = fs::read_to_string(&temp_out)
+        .map_err(|e| format!("failed to read {}: {e}", temp_out.display()))?;
+    let _ = fs::remove_file(&temp_in);
+    let _ = fs::remove_file(&temp_out);
+
+    Ok(if formatted.is_empty() {
+        vec![]
+    } else {
+        formatted.lines().map(str::to_owned).collect()
+    })
+}
+
 fn format_file_to_cache(config: &Path, file: &Path, out: &Path) -> Result<(), String> {
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)
@@ -279,5 +364,15 @@ mod tests {
         let b = cache_key(&file).unwrap();
         assert_eq!(a, b);
         let _ = fs::remove_file(&file);
+    }
+
+    #[test]
+    fn should_format_file_c_skips_non_cpp() {
+        assert!(!should_format_file_c(Path::new("foo.rs")));
+    }
+
+    #[test]
+    fn try_format_file_c_skips_non_cpp() {
+        assert!(try_format_file_c(Path::new("foo.rs"), &["fn main() {}".into()]).is_none());
     }
 }

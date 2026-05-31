@@ -78,6 +78,10 @@ impl ApplyHistory {
     fn pop_snapshot(&mut self) -> Option<Vec<String>> {
         self.undo_stack.pop()
     }
+
+    fn file_c_modified(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
 }
 
 fn cli_usage_error(got: usize) -> String {
@@ -589,6 +593,34 @@ fn handle_apply_cancel(
     ui.set_file_info("Apply cancelled.".into());
 }
 
+fn handle_quit_request(
+    ui: &MainWindow,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    _selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
+    path_c_store: &Arc<Mutex<Option<PathBuf>>>,
+    apply_history: &Arc<Mutex<ApplyHistory>>,
+) {
+    pending_apply_store.lock().unwrap().take();
+    ui.set_apply_pending(false);
+
+    if apply_history.lock().unwrap().file_c_modified() {
+        if let (Some(path_c), Some(view)) = (
+            path_c_store.lock().unwrap().clone(),
+            view_store.lock().unwrap().clone(),
+        ) {
+            if view.triple_pane {
+                let _ = clang_format_preprocess::spawn_detached_format_file_c(
+                    &path_c,
+                    &view.file_c_lines,
+                );
+            }
+        }
+    }
+
+    let _ = slint::quit_event_loop();
+}
+
 fn handle_apply_undo(
     ui: &MainWindow,
     view_store: &Arc<Mutex<Option<ViewData>>>,
@@ -877,6 +909,27 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_apply_undo_requested(move || {
             if let Some(ui) = ui_handle.upgrade() {
                 handle_apply_undo(
+                    &ui,
+                    &view_store,
+                    &selection_store,
+                    &pending_apply_store,
+                    &path_c_store,
+                    &apply_history,
+                );
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        let view_store = Arc::clone(&view_store);
+        let selection_store = Arc::clone(&selection_store);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
+        let path_c_store = Arc::clone(&path_c_store);
+        let apply_history = Arc::clone(&apply_history);
+        ui.on_quit_requested(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                handle_quit_request(
                     &ui,
                     &view_store,
                     &selection_store,

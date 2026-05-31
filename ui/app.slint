@@ -414,6 +414,7 @@ export component MainWindow inherits Window {
     callback center-gutter-clicked(row-index: int);
     callback apply-cancel-requested();
     callback apply-undo-requested();
+    callback quit-requested();
 
     in-out property <length> toolbar-height: 28px;
     in-out property <length> toolbar-gap: 6px;
@@ -511,6 +512,10 @@ export component MainWindow inherits Window {
             || (event.text == "u" && !event.modifiers.shift && !root.vim-modifiers(event))
     }
 
+    pure function is-quit(event: KeyEvent) -> bool {
+        event.text == "q" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
     root-focus := FocusScope {
         width: 100%;
         height: 100%;
@@ -578,6 +583,10 @@ export component MainWindow inherits Window {
                 } else {
                     root.gutter-clicked(-1, false);
                 }
+                return accept;
+            }
+            if (root.is-quit(event)) {
+                root.quit-requested();
                 return accept;
             }
             return reject;
