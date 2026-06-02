@@ -41,6 +41,20 @@ If your parser includes custom C or C++ files for lexing (e.g. a
 `scanner.cc`), add them to `extra_files`.
 
 
+## tree-sitter-latex
+
+Upstream [tree-sitter-latex](https://github.com/latex-lsp/tree-sitter-latex)
+does not commit `src/parser.c`. This fork **vendors** that file so a fresh
+`git clone` can run `cargo build` without installing the tree-sitter CLI.
+
+After updating the latex subtree, regenerate and commit the generated file:
+
+```
+$ cd vendored_parsers/tree-sitter-latex
+$ tree-sitter generate
+$ git add src/parser.c
+```
+
 ## Updating a parser
 
 To update a parser, pull commits from the upstream git repository. For

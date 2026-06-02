@@ -6,8 +6,11 @@
 // body for readability.
 #![allow(clippy::if_same_then_else)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Upstream tree-sitter-latex gitignores `src/parser.c`; this fork vendors it for `cargo build`.
+const LATEX_PARSER_C: &str = "vendored_parsers/tree-sitter-latex/src/parser.c";
 
 use rayon::prelude::*;
 use version_check as rustc;
@@ -67,6 +70,13 @@ impl TreeSitterParser {
 }
 
 fn main() {
+    if !Path::new(LATEX_PARSER_C).exists() {
+        panic!(
+            "missing {LATEX_PARSER_C}: run `tree-sitter generate` in \
+             vendored_parsers/tree-sitter-latex/ and commit src/parser.c"
+        );
+    }
+
     let parsers = vec![
         TreeSitterParser {
             name: "tree-sitter-elvish",

@@ -521,5 +521,5 @@ build/
 /bindings/c/*.h
 /bindings/c/tree-sitter-*.pc
 
-src/parser.c
+# parser.c is committed in this fork (upstream omits it); do not re-ignore.
 src/tree_sitter/
