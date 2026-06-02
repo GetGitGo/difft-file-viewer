@@ -8,6 +8,8 @@ mod model;
 mod segments;
 #[cfg(target_os = "macos")]
 mod macos_icon;
+#[cfg(target_os = "windows")]
+mod windows_edge;
 
 slint::include_modules!();
 
@@ -1293,11 +1295,35 @@ fn schedule_focus_diff_panel(ui: &MainWindow) {
     });
 }
 
+#[cfg(target_os = "windows")]
+fn schedule_fill_work_area(ui: &MainWindow) {
+    let ui_handle = ui.as_weak();
+    for delay_ms in [0_u64, 50, 200] {
+        let ui_handle = ui_handle.clone();
+        slint::Timer::single_shot(Duration::from_millis(delay_ms), move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                windows_edge::fill_work_area(&ui.window());
+            }
+        });
+    }
+}
+
+/// Maximize the window on startup and schedule initial focus.
 fn maximize_on_startup(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = ui_handle.upgrade() {
-            ui.window().set_maximized(true);
+            let window = ui.window();
+            #[cfg(target_os = "windows")]
+            {
+                windows_edge::fill_work_area(&window);
+                windows_edge::install_borderless_hooks(&window);
+                schedule_fill_work_area(&ui);
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                window.set_maximized(true);
+            }
             schedule_focus_diff_panel(&ui);
         }
     });

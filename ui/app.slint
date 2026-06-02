@@ -43,9 +43,9 @@ export enum DiffState {
 
 component PathLabel inherits Rectangle {
     in property <string> path: "";
+    in property <length> text-gutter: 4px;
 
     background: #44475a;
-    border-radius: 2px;
     horizontal-stretch: 1;
     min-width: 1px;
 
@@ -56,8 +56,8 @@ component PathLabel inherits Rectangle {
         horizontal-alignment: left;
         vertical-alignment: center;
         overflow: elide;
-        x: 6px;
-        width: parent.width - 12px;
+        x: root.text-gutter;
+        width: parent.width - 2 * root.text-gutter;
     }
 }
 
@@ -333,14 +333,17 @@ component DiffCodeScrollView inherits Rectangle {
     vertical-stretch: 1;
     horizontal-stretch: 1;
     clip: true;
+    background: #282a36;
 
-    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height);
+    private property <length> scroll-bottom-padding: root.code-line-height;
+    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height - root.scroll-bottom-padding);
 
     list := ListView {
         width: parent.width;
-        height: parent.height;
+        height: parent.height - root.scroll-bottom-padding;
 
         for line[index] in root.lines: HorizontalBox {
+            width: list.viewport-width;
             height: root.code-line-height;
             spacing: 0px;
             padding: 0px;
@@ -489,6 +492,8 @@ export component MainWindow inherits Window {
     preferred-width: 2560px;
     preferred-height: 1440px;
     title: "difft-file-viewer";
+    no-frame: true;
+    resize-border-width: 0px;
     icon: @image-url("../assets/icons/icon-256.png");
     background: #282a36;
     forward-focus: root-focus;
@@ -503,13 +508,15 @@ export component MainWindow inherits Window {
     callback quit-requested();
 
     in-out property <length> toolbar-height: 16px;
-    in-out property <length> toolbar-gap: 4px;
+    in-out property <length> toolbar-gap: 1px;
     in-out property <length> code-font-size: 12px;
     in-out property <brush> gutter-line-color: #6272a4;
     in-out property <brush> gutter-selected-color: #bd93f9;
     in-out property <brush> gutter-insert-color: #50fa7b;
     private property <length> code-line-height: root.code-font-size + 8px;
     private property <length> line-number-width: root.code-font-size * 48 / 12;
+    private property <bool> show-status-bar: root.status-text != "" || root.file-info != "";
+    private property <length> status-bar-height: 72px;
 
     in-out property <string> path-a: "";
     in-out property <string> path-b: "";
@@ -700,20 +707,89 @@ export component MainWindow inherits Window {
             return reject;
         }
 
-        VerticalBox {
-        padding-top: 0px;
-        padding-left: 4px;
-        padding-right: 4px;
-        padding-bottom: 4px;
-        spacing: 4px;
+        diff-panel := Rectangle {
+            width: 100%;
+            height: 100%;
 
-        diff-panel := VerticalBox {
-            spacing: 0px;
-            vertical-stretch: 1;
+            content-row := Rectangle {
+                y: root.toolbar-height;
+                width: parent.width;
+                height: parent.height - root.toolbar-height;
+                clip: true;
+                background: #282a36;
 
-            toolbar := HorizontalBox {
+                code-scroll := DiffCodeScrollView {
+                    width: parent.width;
+                    height: parent.height - (root.show-status-bar ? root.status-bar-height : 0px);
+                    code-line-height: root.code-line-height;
+                    code-font-size: root.code-font-size;
+                    line-number-width: root.line-number-width;
+                    gutter-line-color: root.gutter-line-color;
+                    gutter-selected-color: root.gutter-selected-color;
+                    gutter-insert-color: root.gutter-insert-color;
+                    triple-pane: root.triple-pane;
+                    apply-pending: root.apply-pending;
+                    lines: root.lines;
+                    code-scroll-x <=> root.code-scroll-x;
+                    max-content-width: root.max-content-width;
+                    gutter-clicked(row-index, lhs-side) => {
+                        root.gutter-clicked(row-index, lhs-side);
+                    }
+                    apply-clicked(row-index, lhs-side) => {
+                        root.apply-clicked(row-index, lhs-side);
+                    }
+                    center-gutter-clicked(row-index) => {
+                        root.center-gutter-clicked(row-index);
+                    }
+                    center-delete-clicked(row-index) => {
+                        root.center-delete-clicked(row-index);
+                    }
+                    center-move-clicked(row-index) => {
+                        root.center-move-clicked(row-index);
+                    }
+                }
+
+                status-bar := Rectangle {
+                    visible: root.show-status-bar;
+                    width: parent.width;
+                    height: root.status-bar-height;
+                    y: parent.height - self.height;
+                    background: #21222c;
+                    clip: true;
+
+                    VerticalBox {
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        padding-top: 2px;
+                        padding-bottom: 2px;
+                        spacing: 2px;
+
+                        Text {
+                            text: root.status-text;
+                            color: #f8f8f2;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            visible: root.status-text != "";
+                        }
+
+                        Text {
+                            text: root.file-info;
+                            color: #bd93f9;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            visible: root.file-info != "";
+                        }
+                    }
+                }
+            }
+
+            header-row := HorizontalBox {
+                y: 0;
+                width: parent.width;
                 height: root.toolbar-height;
+                padding: 0px;
                 spacing: root.toolbar-gap;
+                z: 2;
 
                 PathLabel {
                     height: root.toolbar-height;
@@ -730,58 +806,6 @@ export component MainWindow inherits Window {
                     path: root.path-b;
                 }
             }
-
-            // One code row between path labels and diff content.
-            Rectangle {
-                height: root.code-line-height;
-            }
-
-            code-scroll := DiffCodeScrollView {
-                vertical-stretch: 1;
-                code-line-height: root.code-line-height;
-                code-font-size: root.code-font-size;
-                line-number-width: root.line-number-width;
-                gutter-line-color: root.gutter-line-color;
-                gutter-selected-color: root.gutter-selected-color;
-                gutter-insert-color: root.gutter-insert-color;
-                triple-pane: root.triple-pane;
-                apply-pending: root.apply-pending;
-                lines: root.lines;
-                code-scroll-x <=> root.code-scroll-x;
-                max-content-width: root.max-content-width;
-                gutter-clicked(row-index, lhs-side) => {
-                    root.gutter-clicked(row-index, lhs-side);
-                }
-                apply-clicked(row-index, lhs-side) => {
-                    root.apply-clicked(row-index, lhs-side);
-                }
-                center-gutter-clicked(row-index) => {
-                    root.center-gutter-clicked(row-index);
-                }
-                center-delete-clicked(row-index) => {
-                    root.center-delete-clicked(row-index);
-                }
-                center-move-clicked(row-index) => {
-                    root.center-move-clicked(row-index);
-                }
-            }
-        }
-
-        Text {
-            text: root.status-text;
-            color: #f8f8f2;
-            font-size: 12px;
-            wrap: word-wrap;
-            visible: root.status-text != "";
-        }
-
-        Text {
-            text: root.file-info;
-            color: #bd93f9;
-            font-size: 12px;
-            wrap: word-wrap;
-            visible: root.file-info != "";
-        }
         }
     }
 }

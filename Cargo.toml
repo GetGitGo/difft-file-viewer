@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-slint = { version = "1.13", default-features = false, features = ["backend-winit", "renderer-femtovg", "compat-1-2"] }
+slint = { version = "1.16", default-features = false, features = ["backend-winit", "renderer-femtovg", "compat-1-2"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
@@ -21,11 +21,22 @@ objc2-app-kit = { version = "0.2.2", default-features = false, features = [
 objc2-foundation = { version = "0.2.2", default-features = false, features = ["NSData"] }
 
 [build-dependencies]
-slint-build = "1.13"
+slint-build = "1.16"
 resvg = "0.44"
 usvg = "0.44"
 tiny-skia = "0.11"
 ico = "0.4"
 
-[target.'cfg(windows)'.build-dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
+i-slint-backend-winit = { version = "1.16", default-features = false }
+winit = { version = "0.30", default-features = false }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
 winres = "0.1"
