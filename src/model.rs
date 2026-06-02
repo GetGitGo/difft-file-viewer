@@ -47,6 +47,9 @@ pub enum DiffStatus {
 pub struct AlignedLine {
     pub lhs_line: Option<u32>,
     pub rhs_line: Option<u32>,
+    /// File C line index when this row is not tied to an A/B alignment (trailing C-only rows).
+    #[serde(default)]
+    pub file_c_only_line: Option<u32>,
     pub lhs_text: String,
     pub rhs_text: String,
     pub is_novel_lhs: bool,
@@ -160,6 +163,20 @@ fn read_file_lines(path: &Path) -> Result<Vec<String>, String> {
     Ok(split_logical_lines(&content))
 }
 
+/// Inclusive 0-based line range from a source file (for Apply/Move from A or B).
+pub fn file_lines_in_range(path: &Path, start: u32, end: u32) -> Result<Vec<String>, String> {
+    let lines = read_file_lines(path)?;
+    let start = start as usize;
+    if start >= lines.len() {
+        return Ok(vec![]);
+    }
+    let end = (end as usize).min(lines.len() - 1);
+    if start > end {
+        return Ok(vec![]);
+    }
+    Ok(lines[start..=end].to_vec())
+}
+
 fn normalize_diff_file(file: &mut DiffFile) {
     for line in &mut file.aligned_lines {
         line.lhs_text = normalize_line(&line.lhs_text);
@@ -268,6 +285,7 @@ fn convert_new_diff_json(raw: NewDiffFile, path_a: &Path, path_b: &Path) -> Resu
             AlignedLine {
                 lhs_line,
                 rhs_line,
+                file_c_only_line: None,
                 lhs_text: line_text(&lhs_lines, lhs_line),
                 rhs_text: line_text(&rhs_lines, rhs_line),
                 is_novel_lhs,

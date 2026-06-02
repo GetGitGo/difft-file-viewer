@@ -1,4 +1,5 @@
 //! macOS Dock / Cmd+Tab icon (winit ignores per-window icons on macOS).
+#![cfg(target_os = "macos")]
 
 use objc2::ClassType;
 use objc2_app_kit::{NSApplication, NSImage};

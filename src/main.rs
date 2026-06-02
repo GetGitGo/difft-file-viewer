@@ -7,6 +7,8 @@ mod line_ending;
 mod model;
 mod segments;
 #[cfg(target_os = "macos")]
+mod macos_edge;
+#[cfg(target_os = "macos")]
 mod macos_icon;
 #[cfg(target_os = "windows")]
 mod windows_edge;
@@ -37,6 +39,9 @@ const MAX_APPLY_HISTORY: usize = 100;
 #[derive(Clone)]
 struct ViewData {
     diff: DiffFile,
+    /// Original paths for Apply (not clang-format temp copies used for difft).
+    path_lhs: PathBuf,
+    path_rhs: PathBuf,
     file_c_lines: Vec<String>,
     file_c_syntax_blocks: Vec<SyntaxBlock>,
     triple_pane: bool,
@@ -205,22 +210,12 @@ fn write_file_lines(path: &Path, lines: &[String]) -> Result<(), String> {
     fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
-fn block_source_lines(diff: &DiffFile, side: DiffSide, start: u32, end: u32) -> Vec<(u32, String)> {
-    let mut lines = Vec::new();
-    for aligned in &diff.aligned_lines {
-        let line = match side {
-            DiffSide::Lhs => aligned.lhs_line.map(|n| (n, aligned.lhs_text.clone())),
-            DiffSide::Rhs => aligned.rhs_line.map(|n| (n, aligned.rhs_text.clone())),
-            DiffSide::Center => None,
-        };
-        if let Some((line_no, text)) = line {
-            if start <= line_no && line_no <= end {
-                lines.push((line_no, text));
-            }
-        }
+fn block_source_path<'a>(view: &'a ViewData, side: DiffSide) -> Result<&'a Path, String> {
+    match side {
+        DiffSide::Lhs => Ok(view.path_lhs.as_path()),
+        DiffSide::Rhs => Ok(view.path_rhs.as_path()),
+        DiffSide::Center => Err("cannot apply from file C as a diff side.".to_owned()),
     }
-    lines.sort_by_key(|(line_no, _)| *line_no);
-    lines
 }
 
 fn is_empty_line(line: &str) -> bool {
@@ -248,16 +243,16 @@ fn prepare_insert_point(file_c_lines: &mut Vec<String>, insert_at: usize) {
     }
 }
 
+fn block_lines_for_selection(view: &ViewData, sel: BlockSelection) -> Result<Vec<String>, String> {
+    let path = block_source_path(view, sel.side)?;
+    model::file_lines_in_range(path, sel.start_line, sel.end_line)
+}
+
 fn apply_block_to_file_c(
     file_c_lines: &mut Vec<String>,
-    diff: &DiffFile,
-    sel: BlockSelection,
+    block_lines: Vec<String>,
     insert_at: usize,
 ) -> Result<(), String> {
-    let block_lines: Vec<String> = block_source_lines(diff, sel.side, sel.start_line, sel.end_line)
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect();
     if block_lines.is_empty() {
         return Err("selected syntax block has no source lines.".to_owned());
     }
@@ -386,9 +381,61 @@ fn show_center_move(
         })
 }
 
+fn max_aligned_source_line(aligned_lines: &[AlignedLine]) -> Option<u32> {
+    aligned_lines
+        .iter()
+        .filter_map(|line| line.lhs_line.or(line.rhs_line))
+        .max()
+}
+
+fn file_c_line_index(aligned: &AlignedLine) -> Option<u32> {
+    aligned
+        .file_c_only_line
+        .or_else(|| aligned.lhs_line.or(aligned.rhs_line))
+}
+
+fn trailing_file_c_rows(file_c_lines: &[String], aligned_lines: &[AlignedLine]) -> Vec<AlignedLine> {
+    let Some(max_idx) = max_aligned_source_line(aligned_lines) else {
+        return Vec::new();
+    };
+    let start = (max_idx + 1) as usize;
+    if start >= file_c_lines.len() {
+        return Vec::new();
+    }
+    (start..file_c_lines.len())
+        .map(|line_idx| AlignedLine {
+            lhs_line: None,
+            rhs_line: None,
+            file_c_only_line: Some(line_idx as u32),
+            lhs_text: String::new(),
+            rhs_text: String::new(),
+            is_novel_lhs: false,
+            is_novel_rhs: false,
+            lhs_spans: vec![],
+            rhs_spans: vec![],
+        })
+        .collect()
+}
+
+fn display_aligned_lines(view: &ViewData) -> Vec<AlignedLine> {
+    if !view.triple_pane {
+        return view.diff.aligned_lines.clone();
+    }
+    let mut rows = view.diff.aligned_lines.clone();
+    rows.extend(trailing_file_c_rows(
+        &view.file_c_lines,
+        &view.diff.aligned_lines,
+    ));
+    rows
+}
+
+fn aligned_line_for_row(view: &ViewData, row: usize) -> Option<AlignedLine> {
+    display_aligned_lines(view).get(row).cloned()
+}
+
 fn center_line_for_row(view: &ViewData, row: usize) -> Option<u32> {
-    let aligned = view.diff.aligned_lines.get(row)?;
-    aligned.lhs_line.or(aligned.rhs_line)
+    let aligned = aligned_line_for_row(view, row)?;
+    file_c_line_index(&aligned)
 }
 
 fn center_row_matches_action(view: &ViewData, row: usize, sel: BlockSelection, move_action: bool) -> bool {
@@ -475,7 +522,7 @@ fn line_in_selection(line: Option<u32>, sel: Option<BlockSelection>, side: DiffS
 }
 
 fn center_line_for_aligned(aligned: &AlignedLine, file_c_lines: &[String]) -> (i32, String) {
-    let Some(line_idx) = aligned.lhs_line.or(aligned.rhs_line) else {
+    let Some(line_idx) = file_c_line_index(aligned) else {
         return (-1, String::new());
     };
     let text = file_c_lines
@@ -511,23 +558,19 @@ fn slint_line(
         center_selected: if apply_pending {
             center_line >= 1
         } else {
-            line_in_selection(
-                line.lhs_line.or(line.rhs_line),
-                sel,
-                DiffSide::Center,
-            )
+            line_in_selection(file_c_line_index(line), sel, DiffSide::Center)
         },
         lhs_show_apply: show_apply_on_line(view.triple_pane, sel, DiffSide::Lhs, line.lhs_line),
         rhs_show_apply: show_apply_on_line(view.triple_pane, sel, DiffSide::Rhs, line.rhs_line),
         center_show_delete: show_center_delete(
             view.triple_pane,
             sel,
-            line.lhs_line.or(line.rhs_line),
+            file_c_line_index(line),
         ),
         center_show_move: show_center_move(
             view.triple_pane,
             sel,
-            line.lhs_line.or(line.rhs_line),
+            file_c_line_index(line),
         ),
         lhs_plain_text: lhs_text.clone().into(),
         rhs_plain_text: rhs_text.clone().into(),
@@ -605,8 +648,7 @@ fn slint_lines(
     sel: Option<BlockSelection>,
     apply_pending: bool,
 ) -> Vec<DiffLine> {
-    view.diff
-        .aligned_lines
+    display_aligned_lines(view)
         .iter()
         .map(|line| slint_line(line, view, sel, apply_pending))
         .collect()
@@ -767,12 +809,11 @@ fn handle_center_apply_insert(
     }
 
     let row = row as usize;
-    let Some(aligned) = view.diff.aligned_lines.get(row) else {
+    let Some(aligned) = aligned_line_for_row(&view, row) else {
         *pending_apply_store.lock().unwrap() = Some(sel);
         return;
     };
-    let insert_line = aligned.lhs_line.or(aligned.rhs_line);
-    let Some(insert_line) = insert_line else {
+    let Some(insert_line) = file_c_line_index(&aligned) else {
         *pending_apply_store.lock().unwrap() = Some(sel);
         ui.set_file_info("Choose a file C row with a line number.".into());
         return;
@@ -786,7 +827,16 @@ fn handle_center_apply_insert(
     };
 
     let snapshot = view.file_c_lines.clone();
-    match apply_block_to_file_c(&mut view.file_c_lines, &view.diff, sel, insert_at) {
+    let block_lines = match block_lines_for_selection(&view, sel) {
+        Ok(lines) => lines,
+        Err(err) => {
+            *pending_apply_store.lock().unwrap() = Some(sel);
+            refresh_diff_ui(ui, view_store, selection_store, pending_apply_store);
+            ui.set_file_info(err.into());
+            return;
+        }
+    };
+    match apply_block_to_file_c(&mut view.file_c_lines, block_lines, insert_at) {
         Ok(()) => {
             if let Err(err) = persist_file_c_edit(
                 &mut view,
@@ -836,10 +886,10 @@ fn handle_center_block_select(
     }
 
     let row = row as usize;
-    let Some(aligned) = view.diff.aligned_lines.get(row) else {
+    let Some(aligned) = aligned_line_for_row(&view, row) else {
         return;
     };
-    let Some(line_0based) = aligned.lhs_line.or(aligned.rhs_line) else {
+    let Some(line_0based) = file_c_line_index(&aligned) else {
         return;
     };
 
@@ -890,12 +940,11 @@ fn handle_center_move_insert(
     }
 
     let row = row as usize;
-    let Some(aligned) = view.diff.aligned_lines.get(row) else {
+    let Some(aligned) = aligned_line_for_row(&view, row) else {
         *pending_apply_store.lock().unwrap() = Some(sel);
         return;
     };
-    let insert_line = aligned.lhs_line.or(aligned.rhs_line);
-    let Some(insert_line) = insert_line else {
+    let Some(insert_line) = file_c_line_index(&aligned) else {
         *pending_apply_store.lock().unwrap() = Some(sel);
         ui.set_file_info("Choose a file C row with a line number.".into());
         return;
@@ -1238,6 +1287,8 @@ fn run_diff(
             };
             let mut view = ViewData {
                 diff,
+                path_lhs: path_a,
+                path_rhs: path_b,
                 file_c_lines,
                 file_c_syntax_blocks: vec![],
                 triple_pane,
@@ -1295,14 +1346,18 @@ fn schedule_focus_diff_panel(ui: &MainWindow) {
     });
 }
 
-#[cfg(target_os = "windows")]
-fn schedule_fill_work_area(ui: &MainWindow) {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn schedule_fill_screen_edges(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
-    for delay_ms in [0_u64, 50, 200] {
+    for delay_ms in [0_u64, 50, 200, 500, 1000] {
         let ui_handle = ui_handle.clone();
         slint::Timer::single_shot(Duration::from_millis(delay_ms), move || {
             if let Some(ui) = ui_handle.upgrade() {
-                windows_edge::fill_work_area(&ui.window());
+                let window = ui.window();
+                #[cfg(target_os = "windows")]
+                windows_edge::fill_work_area(&window);
+                #[cfg(target_os = "macos")]
+                macos_edge::fill_screen(&window);
             }
         });
     }
@@ -1311,19 +1366,22 @@ fn schedule_fill_work_area(ui: &MainWindow) {
 /// Maximize the window on startup and schedule initial focus.
 fn maximize_on_startup(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
-    let _ = slint::invoke_from_event_loop(move || {
+    slint::Timer::single_shot(Duration::from_millis(0), move || {
         if let Some(ui) = ui_handle.upgrade() {
             let window = ui.window();
             #[cfg(target_os = "windows")]
             {
                 windows_edge::fill_work_area(&window);
                 windows_edge::install_borderless_hooks(&window);
-                schedule_fill_work_area(&ui);
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
+            macos_edge::fill_screen(&window);
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
             {
                 window.set_maximized(true);
             }
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            schedule_fill_screen_edges(&ui);
             schedule_focus_diff_panel(&ui);
         }
     });
@@ -1331,7 +1389,7 @@ fn maximize_on_startup(ui: &MainWindow) {
 
 #[cfg(target_os = "macos")]
 fn schedule_application_icon() {
-    let _ = slint::invoke_from_event_loop(move || {
+    slint::Timer::single_shot(Duration::from_millis(0), || {
         macos_icon::set_from_png(include_bytes!("../assets/icons/icon-512.png"));
     });
 }
@@ -1597,6 +1655,27 @@ fn main() -> Result<(), slint::PlatformError> {
 #[cfg(test)]
 mod apply_tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_source_file(content: &str) -> PathBuf {
+        let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("difft-file-viewer-apply-{id}"));
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    fn view_for_apply(lhs_source: &str, diff: DiffFile) -> ViewData {
+        ViewData {
+            diff,
+            path_lhs: temp_source_file(lhs_source),
+            path_rhs: temp_source_file("rhs\n"),
+            file_c_lines: vec![],
+            file_c_syntax_blocks: vec![],
+            triple_pane: true,
+        }
+    }
 
     #[test]
     fn insert_block_pushes_existing_lines_down() {
@@ -1613,6 +1692,7 @@ mod apply_tests {
             aligned_lines: vec![AlignedLine {
                 lhs_line: Some(0),
                 rhs_line: Some(0),
+                file_c_only_line: None,
                 lhs_text: "x".into(),
                 rhs_text: "x".into(),
                 is_novel_lhs: true,
@@ -1630,13 +1710,57 @@ mod apply_tests {
             end_line: 0,
         };
 
-        apply_block_to_file_c(&mut file_c, &diff, sel, 1).unwrap();
+        let view = view_for_apply("x\n", diff);
+        let lines = block_lines_for_selection(&view, sel).unwrap();
+        apply_block_to_file_c(&mut file_c, lines, 1).unwrap();
         assert_eq!(
             file_c,
             vec![
                 "a".to_owned(),
                 "x".to_owned(),
                 "b".to_owned(),
+                "c".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_reads_full_block_beyond_aligned_lines() {
+        let mut file_c = vec!["c".to_owned()];
+        let diff = DiffFile {
+            path: String::new(),
+            language: String::new(),
+            status: model::DiffStatus::Changed,
+            extra_info: None,
+            aligned_lines: vec![AlignedLine {
+                lhs_line: Some(0),
+                rhs_line: Some(0),
+                file_c_only_line: None,
+                lhs_text: "line0".into(),
+                rhs_text: "line0".into(),
+                is_novel_lhs: true,
+                is_novel_rhs: true,
+                lhs_spans: vec![],
+                rhs_spans: vec![],
+            }],
+            lhs_syntax_blocks: vec![],
+            rhs_syntax_blocks: vec![],
+        };
+        let sel = BlockSelection {
+            side: DiffSide::Lhs,
+            block_id: 0,
+            start_line: 0,
+            end_line: 2,
+        };
+        let view = view_for_apply("line0\nline1\nline2\n", diff);
+        let lines = block_lines_for_selection(&view, sel).unwrap();
+        apply_block_to_file_c(&mut file_c, lines, 0).unwrap();
+        assert_eq!(
+            file_c,
+            vec![
+                "line0".to_owned(),
+                "line1".to_owned(),
+                "line2".to_owned(),
                 "c".to_owned(),
             ]
         );
@@ -1653,6 +1777,7 @@ mod apply_tests {
             aligned_lines: vec![AlignedLine {
                 lhs_line: Some(0),
                 rhs_line: Some(0),
+                file_c_only_line: None,
                 lhs_text: "new".into(),
                 rhs_text: "new".into(),
                 is_novel_lhs: true,
@@ -1670,7 +1795,9 @@ mod apply_tests {
             end_line: 0,
         };
 
-        apply_block_to_file_c(&mut file_c, &diff, sel, 4).unwrap();
+        let view = view_for_apply("new\n", diff);
+        let lines = block_lines_for_selection(&view, sel).unwrap();
+        apply_block_to_file_c(&mut file_c, lines, 4).unwrap();
         assert_eq!(file_c.len(), 5);
         assert_eq!(file_c[0], "only");
         assert_eq!(file_c[1], "");
@@ -1690,6 +1817,7 @@ mod apply_tests {
             aligned_lines: vec![AlignedLine {
                 lhs_line: Some(0),
                 rhs_line: Some(0),
+                file_c_only_line: None,
                 lhs_text: "x".into(),
                 rhs_text: "x".into(),
                 is_novel_lhs: true,
@@ -1707,7 +1835,9 @@ mod apply_tests {
             end_line: 0,
         };
 
-        apply_block_to_file_c(&mut file_c, &diff, sel, 4).unwrap();
+        let view = view_for_apply("x\n", diff);
+        let lines = block_lines_for_selection(&view, sel).unwrap();
+        apply_block_to_file_c(&mut file_c, lines, 4).unwrap();
         assert_eq!(file_c[4], "x");
         assert_eq!(file_c[1], "");
         assert_eq!(file_c[2], "");
@@ -1731,6 +1861,7 @@ mod apply_tests {
                 AlignedLine {
                     lhs_line: Some(0),
                     rhs_line: Some(0),
+                    file_c_only_line: None,
                     lhs_text: "x".into(),
                     rhs_text: "x".into(),
                     is_novel_lhs: true,
@@ -1741,6 +1872,7 @@ mod apply_tests {
                 AlignedLine {
                     lhs_line: Some(1),
                     rhs_line: Some(1),
+                    file_c_only_line: None,
                     lhs_text: "y".into(),
                     rhs_text: "y".into(),
                     is_novel_lhs: true,
@@ -1759,7 +1891,9 @@ mod apply_tests {
             end_line: 1,
         };
 
-        apply_block_to_file_c(&mut file_c, &diff, sel, 1).unwrap();
+        let view = view_for_apply("x\ny\n", diff);
+        let lines = block_lines_for_selection(&view, sel).unwrap();
+        apply_block_to_file_c(&mut file_c, lines, 1).unwrap();
         assert_eq!(
             file_c,
             vec![
@@ -1788,6 +1922,7 @@ mod apply_tests {
                 AlignedLine {
                     lhs_line: Some(0),
                     rhs_line: Some(0),
+                    file_c_only_line: None,
                     lhs_text: "x".into(),
                     rhs_text: "x".into(),
                     is_novel_lhs: true,
@@ -1798,6 +1933,7 @@ mod apply_tests {
                 AlignedLine {
                     lhs_line: Some(1),
                     rhs_line: Some(1),
+                    file_c_only_line: None,
                     lhs_text: "y".into(),
                     rhs_text: "y".into(),
                     is_novel_lhs: true,
@@ -1816,7 +1952,9 @@ mod apply_tests {
             end_line: 1,
         };
 
-        apply_block_to_file_c(&mut file_c, &diff, sel, 1).unwrap();
+        let view = view_for_apply("x\ny\n", diff);
+        let lines = block_lines_for_selection(&view, sel).unwrap();
+        apply_block_to_file_c(&mut file_c, lines, 1).unwrap();
         assert_eq!(
             file_c,
             vec![
@@ -1868,5 +2006,52 @@ mod apply_tests {
                 "c".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn display_includes_file_c_lines_past_ab_alignment() {
+        let diff = DiffFile {
+            path: String::new(),
+            language: String::new(),
+            status: model::DiffStatus::Changed,
+            extra_info: None,
+            aligned_lines: (0..7u32)
+                .map(|n| AlignedLine {
+                    lhs_line: Some(n),
+                    rhs_line: Some(n),
+                    file_c_only_line: None,
+                    lhs_text: format!("lhs{n}"),
+                    rhs_text: format!("rhs{n}"),
+                    is_novel_lhs: false,
+                    is_novel_rhs: false,
+                    lhs_spans: vec![],
+                    rhs_spans: vec![],
+                })
+                .collect(),
+            lhs_syntax_blocks: vec![],
+            rhs_syntax_blocks: vec![],
+        };
+        let view = ViewData {
+            diff,
+            path_lhs: PathBuf::from("a.c"),
+            path_rhs: PathBuf::from("b.c"),
+            file_c_lines: vec![
+                "int main() {".into(),
+                "    printf(\"Hello World\");".into(),
+                "    return 0;".into(),
+                "}".into(),
+                String::new(),
+                "int main() {".into(),
+                "    printf(\"Hello World\");".into(),
+                "    return 0;".into(),
+                "}".into(),
+            ],
+            file_c_syntax_blocks: vec![],
+            triple_pane: true,
+        };
+        let ui_lines = slint_lines(&view, None, false);
+        assert_eq!(ui_lines.len(), 9);
+        assert_eq!(ui_lines[7].center_plain_text.as_str(), "    return 0;");
+        assert_eq!(ui_lines[8].center_plain_text.as_str(), "}");
     }
 }

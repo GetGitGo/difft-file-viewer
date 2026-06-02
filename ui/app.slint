@@ -489,8 +489,7 @@ component DiffCodeScrollView inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    preferred-width: 2560px;
-    preferred-height: 1440px;
+    // Native code sets size: macOS fullscreen, Windows fill_work_area.
     title: "difft-file-viewer";
     no-frame: true;
     resize-border-width: 0px;
