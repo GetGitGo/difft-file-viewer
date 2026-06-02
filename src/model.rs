@@ -1,5 +1,10 @@
-//! JSON types matching `difft --display json` (GuiDiffFile schema).
+//! JSON types matching `difft --display json`.
 
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+use crate::line_ending::{normalize_line, split_logical_lines};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,7 +57,66 @@ pub struct AlignedLine {
     pub rhs_spans: Vec<crate::segments::TextSpan>,
 }
 
-pub fn parse_diff_json(stdout: &[u8]) -> Result<DiffFile, String> {
+#[derive(Debug, Deserialize)]
+struct NewDiffFile {
+    path: String,
+    language: String,
+    status: DiffStatus,
+    #[serde(default)]
+    extra_info: Option<String>,
+    #[serde(default)]
+    aligned_lines: Vec<(Option<u32>, Option<u32>)>,
+    #[serde(default)]
+    chunks: Vec<Vec<NewChunkLine>>,
+    #[serde(default)]
+    lhs_syntax_blocks: Vec<SyntaxBlock>,
+    #[serde(default)]
+    rhs_syntax_blocks: Vec<SyntaxBlock>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NewChunkLine {
+    #[serde(default)]
+    lhs: Option<NewSide>,
+    #[serde(default)]
+    rhs: Option<NewSide>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NewSide {
+    line_number: u32,
+    #[serde(default)]
+    changes: Vec<NewChange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NewChange {
+    start: u32,
+    end: u32,
+    content: String,
+    highlight: crate::segments::Highlight,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SingleFileSyntaxBlocks {
+    #[allow(dead_code)]
+    pub path: String,
+    #[allow(dead_code)]
+    pub language: String,
+    pub syntax_blocks: Vec<SyntaxBlock>,
+}
+
+pub fn parse_syntax_blocks_json(stdout: &[u8]) -> Result<SingleFileSyntaxBlocks, String> {
+    let trimmed = std::str::from_utf8(stdout)
+        .map_err(|e| e.to_string())?
+        .trim();
+    if trimmed.is_empty() {
+        return Err("difft produced no syntax blocks JSON.".to_owned());
+    }
+    serde_json::from_str(trimmed).map_err(|e| format!("invalid syntax blocks JSON: {e}"))
+}
+
+pub fn parse_diff_json(stdout: &[u8], path_a: &Path, path_b: &Path) -> Result<DiffFile, String> {
     let trimmed = std::str::from_utf8(stdout)
         .map_err(|e| e.to_string())?
         .trim();
@@ -60,16 +124,171 @@ pub fn parse_diff_json(stdout: &[u8]) -> Result<DiffFile, String> {
         return Err("difft produced no JSON output.".to_owned());
     }
 
-    if trimmed.starts_with('[') {
-        let files: Vec<DiffFile> =
-            serde_json::from_str(trimmed).map_err(|e| format!("invalid JSON array: {e}"))?;
-        files
-            .into_iter()
-            .next()
-            .ok_or_else(|| "difft returned an empty JSON array.".to_owned())
+    let value: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| format!("invalid JSON: {e}"))?;
+    let value = if let Some(array) = value.as_array() {
+        array
+            .first()
+            .cloned()
+            .ok_or_else(|| "difft returned an empty JSON array.".to_owned())?
     } else {
-        serde_json::from_str(trimmed).map_err(|e| format!("invalid JSON: {e}"))
+        value
+    };
+
+    if uses_legacy_aligned_lines(&value) {
+        let mut file: DiffFile =
+            serde_json::from_value(value).map_err(|e| format!("invalid JSON: {e}"))?;
+        normalize_diff_file(&mut file);
+        Ok(file)
+    } else {
+        let raw: NewDiffFile =
+            serde_json::from_value(value).map_err(|e| format!("invalid JSON: {e}"))?;
+        convert_new_diff_json(raw, path_a, path_b)
     }
+}
+
+fn uses_legacy_aligned_lines(value: &serde_json::Value) -> bool {
+    value
+        .get("aligned_lines")
+        .and_then(|lines| lines.as_array())
+        .is_some_and(|lines| lines.first().is_some_and(|line| line.is_object()))
+}
+
+fn read_file_lines(path: &Path) -> Result<Vec<String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    Ok(split_logical_lines(&content))
+}
+
+fn normalize_diff_file(file: &mut DiffFile) {
+    for line in &mut file.aligned_lines {
+        line.lhs_text = normalize_line(&line.lhs_text);
+        line.rhs_text = normalize_line(&line.rhs_text);
+        for span in &mut line.lhs_spans {
+            span.content = normalize_line(&span.content);
+        }
+        for span in &mut line.rhs_spans {
+            span.content = normalize_line(&span.content);
+        }
+    }
+}
+
+fn line_text(lines: &[String], line: Option<u32>) -> String {
+    line.and_then(|n| lines.get(n as usize))
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn changes_to_spans(changes: &[NewChange]) -> Vec<crate::segments::TextSpan> {
+    changes
+        .iter()
+        .map(|change| crate::segments::TextSpan {
+            start: change.start,
+            end: change.end,
+            content: normalize_line(&change.content),
+            highlight: change.highlight,
+            is_novel: true,
+        })
+        .collect()
+}
+
+fn aligned_pairs_for_status(
+    status: DiffStatus,
+    lhs_lines: &[String],
+    rhs_lines: &[String],
+) -> Vec<(Option<u32>, Option<u32>)> {
+    match status {
+        DiffStatus::Unchanged => {
+            let count = lhs_lines.len().max(rhs_lines.len());
+            (0..count as u32)
+                .map(|line| (Some(line), Some(line)))
+                .collect()
+        }
+        DiffStatus::Created => (0..rhs_lines.len() as u32)
+            .map(|line| (None, Some(line)))
+            .collect(),
+        DiffStatus::Deleted => (0..lhs_lines.len() as u32)
+            .map(|line| (Some(line), None))
+            .collect(),
+        DiffStatus::Changed => Vec::new(),
+    }
+}
+
+fn convert_new_diff_json(raw: NewDiffFile, path_a: &Path, path_b: &Path) -> Result<DiffFile, String> {
+    let lhs_lines = read_file_lines(path_a)?;
+    let rhs_lines = read_file_lines(path_b)?;
+
+    let pairs = if raw.aligned_lines.is_empty() {
+        aligned_pairs_for_status(raw.status, &lhs_lines, &rhs_lines)
+    } else {
+        raw.aligned_lines
+    };
+
+    let mut chunk_map: HashMap<(Option<u32>, Option<u32>), NewChunkLine> = HashMap::new();
+    for chunk in raw.chunks {
+        for line in chunk {
+            let key = (
+                line.lhs.as_ref().map(|side| side.line_number),
+                line.rhs.as_ref().map(|side| side.line_number),
+            );
+            chunk_map.insert(key, line);
+        }
+    }
+
+    let aligned_lines = pairs
+        .into_iter()
+        .map(|(lhs_line, rhs_line)| {
+            let chunk = chunk_map.get(&(lhs_line, rhs_line));
+            let lhs_spans = chunk
+                .and_then(|line| line.lhs.as_ref())
+                .map(|side| changes_to_spans(&side.changes))
+                .unwrap_or_default();
+            let rhs_spans = chunk
+                .and_then(|line| line.rhs.as_ref())
+                .map(|side| changes_to_spans(&side.changes))
+                .unwrap_or_default();
+            let is_novel_lhs = match chunk {
+                Some(line) => {
+                    line.lhs
+                        .as_ref()
+                        .is_some_and(|side| !side.changes.is_empty())
+                        || rhs_line.is_none()
+                }
+                None => false,
+            };
+            let is_novel_rhs = match chunk {
+                Some(line) => {
+                    line.rhs
+                        .as_ref()
+                        .is_some_and(|side| !side.changes.is_empty())
+                        || lhs_line.is_none()
+                }
+                None => false,
+            };
+            AlignedLine {
+                lhs_line,
+                rhs_line,
+                lhs_text: line_text(&lhs_lines, lhs_line),
+                rhs_text: line_text(&rhs_lines, rhs_line),
+                is_novel_lhs,
+                is_novel_rhs,
+                lhs_spans,
+                rhs_spans,
+            }
+        })
+        .collect();
+
+    let mut file = DiffFile {
+        path: raw.path,
+        language: raw.language,
+        status: raw.status,
+        extra_info: raw.extra_info,
+        aligned_lines,
+        lhs_syntax_blocks: raw.lhs_syntax_blocks,
+        rhs_syntax_blocks: raw.rhs_syntax_blocks,
+    };
+    normalize_diff_file(&mut file);
+    Ok(file)
 }
 
 fn is_trivial_syntax_block(block: &SyntaxBlock) -> bool {
@@ -153,7 +372,7 @@ fn is_declaration_label(label: &str) -> bool {
         || label.starts_with("(def")
 }
 
-/// Smallest non-trivial syntax block containing `line` (0-based file line index).
+/// Smallest non-trivial syntax block containing `line` (0-based file index).
 pub fn innermost_syntax_block(blocks: &[SyntaxBlock], line: u32) -> Option<&SyntaxBlock> {
     let mut best: Option<&SyntaxBlock> = None;
     for block in blocks
@@ -199,4 +418,114 @@ pub fn warning_message(file: &DiffFile) -> Option<String> {
         return Some(file.language.clone());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp_file(name: &str, content: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("difft-viewer-{name}-{}.txt", std::process::id()));
+        let mut file = fs::File::create(&path).unwrap();
+        write!(file, "{content}").unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_new_json_format_reads_source_lines() {
+        let path_a = write_temp_file("a", "hello\nkeep");
+        let path_b = write_temp_file("b", "world\nkeep");
+        let json = br#"{
+            "aligned_lines": [[0,0],[1,1]],
+            "chunks": [[{
+                "lhs": {"line_number": 0, "changes": [{"start": 0, "end": 5, "content": "hello", "highlight": "normal"}]},
+                "rhs": {"line_number": 0, "changes": [{"start": 0, "end": 5, "content": "world", "highlight": "normal"}]}
+            }]],
+            "language": "Text",
+            "path": "b",
+            "status": "changed"
+        }"#;
+
+        let diff = parse_diff_json(json, &path_a, &path_b).unwrap();
+        assert_eq!(diff.aligned_lines.len(), 2);
+        assert_eq!(diff.aligned_lines[0].lhs_text, "hello");
+        assert_eq!(diff.aligned_lines[0].rhs_text, "world");
+        assert!(diff.aligned_lines[0].is_novel_lhs);
+        assert!(diff.aligned_lines[0].is_novel_rhs);
+        assert!(!diff.aligned_lines[1].is_novel_lhs);
+        assert_eq!(diff.aligned_lines[1].lhs_text, "keep");
+    }
+
+    #[test]
+    fn parse_unchanged_without_aligned_lines() {
+        let path_a = write_temp_file("unchanged-a", "same\nline");
+        let path_b = write_temp_file("unchanged-b", "same\nline");
+        let json = br#"{"language":"Text","path":"a","status":"unchanged"}"#;
+
+        let diff = parse_diff_json(json, &path_a, &path_b).unwrap();
+        assert_eq!(diff.aligned_lines.len(), 2);
+        assert_eq!(diff.aligned_lines[0].lhs_text, "same");
+        assert!(!diff.aligned_lines[0].is_novel_lhs);
+    }
+
+    #[test]
+    fn parse_reads_crlf_source_lines() {
+        let path_a = write_temp_file("crlf-a", "left\r\n");
+        let path_b = write_temp_file("crlf-b", "right\r\n");
+        let json = br#"{
+            "aligned_lines": [[0,0]],
+            "chunks": [[{
+                "lhs": {"line_number": 0, "changes": [{"start": 0, "end": 4, "content": "left", "highlight": "normal"}]},
+                "rhs": {"line_number": 0, "changes": [{"start": 0, "end": 5, "content": "right", "highlight": "normal"}]}
+            }]],
+            "language": "Text",
+            "path": "b",
+            "status": "changed"
+        }"#;
+
+        let diff = parse_diff_json(json, &path_a, &path_b).unwrap();
+        assert_eq!(diff.aligned_lines[0].lhs_text, "left");
+        assert_eq!(diff.aligned_lines[0].rhs_text, "right");
+    }
+
+    #[test]
+    fn parse_new_json_format_reads_syntax_blocks() {
+        let path_a = write_temp_file("syn-a", "fn a() {}\n");
+        let path_b = write_temp_file("syn-b", "fn b() {}\n");
+        let json = br#"{
+            "aligned_lines": [[0,0]],
+            "chunks": [],
+            "lhs_syntax_blocks": [
+                {"id": 1, "parent_id": null, "label": "(fn a", "start_line": 0, "end_line": 0}
+            ],
+            "rhs_syntax_blocks": [
+                {"id": 2, "parent_id": null, "label": "(fn b", "start_line": 0, "end_line": 0}
+            ],
+            "language": "Rust",
+            "path": "b",
+            "status": "changed"
+        }"#;
+
+        let diff = parse_diff_json(json, &path_a, &path_b).unwrap();
+        assert_eq!(diff.lhs_syntax_blocks.len(), 1);
+        assert_eq!(diff.lhs_syntax_blocks[0].label, "(fn a");
+        assert_eq!(diff.rhs_syntax_blocks[0].start_line, 0);
+        assert!(gutter_syntax_block(&diff.lhs_syntax_blocks, 0).is_some());
+    }
+
+    #[test]
+    fn parse_syntax_blocks_json_reads_dump_output() {
+        let json = br#"{
+            "path": "foo.c",
+            "language": "C++",
+            "syntax_blocks": [
+                {"id": 37, "parent_id": 31, "label": "(if", "start_line": 10, "end_line": 25}
+            ]
+        }"#;
+        let file = parse_syntax_blocks_json(json).unwrap();
+        assert_eq!(file.syntax_blocks.len(), 1);
+        assert_eq!(file.syntax_blocks[0].label, "(if");
+        assert_eq!(file.syntax_blocks[0].start_line, 10);
+    }
 }

@@ -11,6 +11,15 @@ fn main() {
     println!("cargo:rerun-if-changed={SVG}");
     println!("cargo:rerun-if-changed=build.rs");
 
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(build_assets)
+        .expect("spawn build thread")
+        .join()
+        .expect("join build thread");
+}
+
+fn build_assets() {
     fs::create_dir_all(ICONS_DIR).expect("create icons dir");
     for size in PNG_SIZES {
         render_png(SVG, &icon_png_path(size), size);
@@ -21,10 +30,11 @@ fn main() {
     #[cfg(windows)]
     {
         let mut res = winres::WindowsResource::new();
-        res.set_icon(format!("{ICONS_DIR}/icon.ico"));
+        res.set_icon(&format!("{ICONS_DIR}/icon.ico"));
         res.compile().expect("embed Windows icon");
     }
 
+    // Slint codegen is stack-heavy on Windows.
     slint_build::compile("ui/app.slint").expect("compile slint");
 }
 

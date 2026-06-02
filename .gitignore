@@ -11,3 +11,6 @@
 
 # Crate-local cargo output if built outside workspace /target
 /target/
+
+# Patched difftastic build output (source lives in difftastic/)
+/difftastic/target/

@@ -19,6 +19,8 @@ export struct DiffLine {
     center-selected: bool,
     lhs-show-apply: bool,
     rhs-show-apply: bool,
+    center-show-delete: bool,
+    center-show-move: bool,
     lhs-plain-text: string,
     rhs-plain-text: string,
     center-plain-text: string,
@@ -43,7 +45,7 @@ component PathLabel inherits Rectangle {
     in property <string> path: "";
 
     background: #44475a;
-    border-radius: 4px;
+    border-radius: 2px;
     horizontal-stretch: 1;
     min-width: 1px;
 
@@ -54,27 +56,39 @@ component PathLabel inherits Rectangle {
         horizontal-alignment: left;
         vertical-alignment: center;
         overflow: elide;
-        x: 8px;
-        width: parent.width - 16px;
+        x: 6px;
+        width: parent.width - 12px;
     }
 }
 
-component ApplyButton inherits Rectangle {
+enum ActionButtonTone {
+    yellow,
+    red,
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> label: "Apply";
+    in property <ActionButtonTone> tone: ActionButtonTone.yellow;
     callback clicked();
 
     width: 42px;
     height: 17px;
 
-    private property <brush> face-color: apply-touch.pressed ? #f9d423 : (apply-touch.has-hover ? #fff176 : #ffea00);
-    private property <length> face-y: apply-touch.pressed ? 1px : 0px;
+    private property <brush> shadow-color: root.tone == ActionButtonTone.red ? #7a1515 : #9a7b00;
+    private property <brush> normal-face: root.tone == ActionButtonTone.red ? #ff5555 : #ffea00;
+    private property <brush> hover-face: root.tone == ActionButtonTone.red ? #ff7979 : #fff176;
+    private property <brush> pressed-face: root.tone == ActionButtonTone.red ? #e53935 : #f9d423;
+    private property <brush> highlight-color: root.tone == ActionButtonTone.red ? #ffb3b3 : #fff9c4;
+    private property <brush> edge-color: root.tone == ActionButtonTone.red ? #c62828 : #e6b800;
+    private property <brush> face-color: action-touch.pressed ? root.pressed-face : (action-touch.has-hover ? root.hover-face : root.normal-face);
+    private property <length> face-y: action-touch.pressed ? 1px : 0px;
 
-    // 底部阴影，制造凸出感
     Rectangle {
         x: 1px;
         y: 2px;
         width: parent.width - 1px;
         height: parent.height - 1px;
-        background: #9a7b00;
+        background: root.shadow-color;
         border-radius: 4px;
     }
 
@@ -85,36 +99,38 @@ component ApplyButton inherits Rectangle {
         background: root.face-color;
         border-radius: 4px;
 
-        // 顶部高光
         Rectangle {
             height: 45%;
-            background: #fff9c4;
+            background: root.highlight-color;
             border-radius: 4px;
         }
 
-        // 底部暗边
         Rectangle {
             y: parent.height - 2px;
             height: 2px;
-            background: #e6b800;
+            background: root.edge-color;
             border-radius: 2px;
         }
     }
 
-    apply-touch := TouchArea {
+    action-touch := TouchArea {
         clicked => {
             root.clicked();
         }
     }
 
     Text {
-        text: "Apply";
+        text: root.label;
         color: #1a1400;
         font-size: 10px;
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
+}
+
+component ApplyButton inherits ActionButton {
+    label: "Apply";
 }
 
 component CodeSide inherits Rectangle {
@@ -125,6 +141,8 @@ component CodeSide inherits Rectangle {
     in property <bool> novel;
     in property <bool> selected: false;
     in property <bool> show-apply: false;
+    in property <bool> show-center-delete: false;
+    in property <bool> show-center-move: false;
     in property <bool> gutter-enabled: true;
     in property <bool> insert-target: false;
     in property <length> line-height: 20px;
@@ -136,6 +154,8 @@ component CodeSide inherits Rectangle {
     in property <length> code-scroll-x: 0px;
     callback gutter-clicked();
     callback apply-clicked();
+    callback delete-clicked();
+    callback move-clicked();
     callback horizontal-scroll(delta: length);
 
     pure function is-horizontal-scroll(event: PointerScrollEvent) -> bool {
@@ -166,7 +186,7 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: root.plain-text;
             color: root.plain-color;
-            font-family: "monospace";
+            font-family: "Courier New";
             font-size: root.code-font-size;
             font-weight: 700;
             wrap: no-wrap;
@@ -180,7 +200,7 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: seg.text;
             color: seg.color;
-            font-family: "monospace";
+            font-family: "Courier New";
             font-size: root.code-font-size;
             font-weight: 700;
             font-italic: seg.italic;
@@ -210,7 +230,8 @@ component CodeSide inherits Rectangle {
         gutter-touch := TouchArea {
             width: parent.width;
             height: parent.height;
-            enabled: !root.insert-target && root.gutter-enabled && root.line-number >= 1;
+            enabled: !root.insert-target && root.gutter-enabled && root.line-number >= 1
+                && !root.show-apply && !root.show-center-delete && !root.show-center-move;
 
             clicked => {
                 root.gutter-clicked();
@@ -235,12 +256,12 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: root.line-number >= 1 ? root.line-number : "";
             color: root.insert-hovered ? root.gutter-insert-color : (root.selected ? root.gutter-selected-color : root.gutter-line-color);
-            font-family: "monospace";
+            font-family: "Courier New";
             font-size: root.code-font-size;
             font-weight: 700;
             horizontal-alignment: right;
             vertical-alignment: center;
-            visible: !root.show-apply;
+            visible: !root.show-apply && !root.show-center-delete && !root.show-center-move;
         }
 
         if (root.show-apply): ApplyButton {
@@ -248,6 +269,28 @@ component CodeSide inherits Rectangle {
             y: (root.line-height - 17px) / 2;
             clicked => {
                 root.apply-clicked();
+            }
+        }
+
+        if (root.show-center-delete): ActionButton {
+            x: 0px;
+            y: (root.line-height - 17px) / 2;
+            width: 46px;
+            label: "Delete";
+            tone: ActionButtonTone.red;
+            clicked => {
+                root.delete-clicked();
+            }
+        }
+
+        if (root.show-center-move): ActionButton {
+            x: 0px;
+            y: (root.line-height - 17px) / 2;
+            width: 46px;
+            label: "Move";
+            tone: ActionButtonTone.yellow;
+            clicked => {
+                root.move-clicked();
             }
         }
     }
@@ -279,6 +322,8 @@ component DiffCodeScrollView inherits Rectangle {
     callback gutter-clicked(row-index: int, lhs-side: bool);
     callback apply-clicked(row-index: int, lhs-side: bool);
     callback center-gutter-clicked(row-index: int);
+    callback center-delete-clicked(row-index: int);
+    callback center-move-clicked(row-index: int);
 
     private property <int> column-count: root.triple-pane ? 3 : 2;
     private property <length> scaled-max-content-width: root.max-content-width * root.code-font-size / 12px;
@@ -298,6 +343,7 @@ component DiffCodeScrollView inherits Rectangle {
         for line[index] in root.lines: HorizontalBox {
             height: root.code-line-height;
             spacing: 0px;
+            padding: 0px;
 
             CodeSide {
                 line-height: root.code-line-height;
@@ -339,13 +385,21 @@ component DiffCodeScrollView inherits Rectangle {
                 segments: line.center-segments;
                 novel: false;
                 selected: line.center-selected;
+                show-center-delete: line.center-show-delete && !root.apply-pending;
+                show-center-move: line.center-show-move && !root.apply-pending;
                 insert-target: root.apply-pending && line.center-line >= 1;
-                gutter-enabled: root.apply-pending && line.center-line >= 1;
+                gutter-enabled: line.center-line >= 1;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
                 gutter-clicked => {
                     root.center-gutter-clicked(index);
+                }
+                delete-clicked => {
+                    root.center-delete-clicked(index);
+                }
+                move-clicked => {
+                    root.center-move-clicked(index);
                 }
             }
 
@@ -442,18 +496,20 @@ export component MainWindow inherits Window {
     callback gutter-clicked(row-index: int, lhs-side: bool);
     callback apply-clicked(row-index: int, lhs-side: bool);
     callback center-gutter-clicked(row-index: int);
+    callback center-delete-clicked(row-index: int);
+    callback center-move-clicked(row-index: int);
     callback apply-cancel-requested();
     callback apply-undo-requested();
     callback quit-requested();
 
-    in-out property <length> toolbar-height: 28px;
-    in-out property <length> toolbar-gap: 6px;
+    in-out property <length> toolbar-height: 16px;
+    in-out property <length> toolbar-gap: 4px;
     in-out property <length> code-font-size: 12px;
     in-out property <brush> gutter-line-color: #6272a4;
     in-out property <brush> gutter-selected-color: #bd93f9;
     in-out property <brush> gutter-insert-color: #50fa7b;
-    private property <length> code-line-height: root.code-font-size * 20 / 12;
-    private property <length> line-number-width: root.code-font-size * 44 / 12;
+    private property <length> code-line-height: root.code-font-size + 8px;
+    private property <length> line-number-width: root.code-font-size * 48 / 12;
 
     in-out property <string> path-a: "";
     in-out property <string> path-b: "";
@@ -645,26 +701,69 @@ export component MainWindow inherits Window {
         }
 
         VerticalBox {
-        padding: 6px;
+        padding-top: 0px;
+        padding-left: 4px;
+        padding-right: 4px;
+        padding-bottom: 4px;
         spacing: 4px;
 
-        toolbar := HorizontalBox {
-            height: root.toolbar-height;
-            spacing: root.toolbar-gap;
+        diff-panel := VerticalBox {
+            spacing: 0px;
+            vertical-stretch: 1;
 
-            PathLabel {
+            toolbar := HorizontalBox {
                 height: root.toolbar-height;
-                path: root.path-a;
+                spacing: root.toolbar-gap;
+
+                PathLabel {
+                    height: root.toolbar-height;
+                    path: root.path-a;
+                }
+
+                if (root.triple-pane): PathLabel {
+                    height: root.toolbar-height;
+                    path: root.path-c;
+                }
+
+                PathLabel {
+                    height: root.toolbar-height;
+                    path: root.path-b;
+                }
             }
 
-            if (root.triple-pane): PathLabel {
-                height: root.toolbar-height;
-                path: root.path-c;
+            // One code row between path labels and diff content.
+            Rectangle {
+                height: root.code-line-height;
             }
 
-            PathLabel {
-                height: root.toolbar-height;
-                path: root.path-b;
+            code-scroll := DiffCodeScrollView {
+                vertical-stretch: 1;
+                code-line-height: root.code-line-height;
+                code-font-size: root.code-font-size;
+                line-number-width: root.line-number-width;
+                gutter-line-color: root.gutter-line-color;
+                gutter-selected-color: root.gutter-selected-color;
+                gutter-insert-color: root.gutter-insert-color;
+                triple-pane: root.triple-pane;
+                apply-pending: root.apply-pending;
+                lines: root.lines;
+                code-scroll-x <=> root.code-scroll-x;
+                max-content-width: root.max-content-width;
+                gutter-clicked(row-index, lhs-side) => {
+                    root.gutter-clicked(row-index, lhs-side);
+                }
+                apply-clicked(row-index, lhs-side) => {
+                    root.apply-clicked(row-index, lhs-side);
+                }
+                center-gutter-clicked(row-index) => {
+                    root.center-gutter-clicked(row-index);
+                }
+                center-delete-clicked(row-index) => {
+                    root.center-delete-clicked(row-index);
+                }
+                center-move-clicked(row-index) => {
+                    root.center-move-clicked(row-index);
+                }
             }
         }
 
@@ -682,30 +781,6 @@ export component MainWindow inherits Window {
             font-size: 12px;
             wrap: word-wrap;
             visible: root.file-info != "";
-        }
-
-        code-scroll := DiffCodeScrollView {
-            vertical-stretch: 1;
-            code-line-height: root.code-line-height;
-            code-font-size: root.code-font-size;
-            line-number-width: root.line-number-width;
-            gutter-line-color: root.gutter-line-color;
-            gutter-selected-color: root.gutter-selected-color;
-            gutter-insert-color: root.gutter-insert-color;
-            triple-pane: root.triple-pane;
-            apply-pending: root.apply-pending;
-            lines: root.lines;
-            code-scroll-x <=> root.code-scroll-x;
-            max-content-width: root.max-content-width;
-            gutter-clicked(row-index, lhs-side) => {
-                root.gutter-clicked(row-index, lhs-side);
-            }
-            apply-clicked(row-index, lhs-side) => {
-                root.apply-clicked(row-index, lhs-side);
-            }
-            center-gutter-clicked(row-index) => {
-                root.center-gutter-clicked(row-index);
-            }
         }
         }
     }

@@ -3,6 +3,7 @@
 
 mod clang_format_preprocess;
 mod difft_probe;
+mod line_ending;
 mod model;
 mod segments;
 #[cfg(target_os = "macos")]
@@ -16,13 +17,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use difft_probe::{difft_command, install_message, probe_difft};
+use difft_probe::{difft_command, install_message, resolve_difft};
 use model::{
-    gutter_syntax_block, parse_diff_json, warning_message, AlignedLine, DiffFile, SyntaxBlock,
+    gutter_syntax_block, parse_diff_json, parse_syntax_blocks_json, warning_message, AlignedLine,
+    DiffFile, SyntaxBlock,
 };
 use segments::{
-    build_segments, code_brush, plain_line_brush, text_pixel_width, to_slint_segments, Side,
-    GUTTER_INSERT, GUTTER_LINE, GUTTER_SELECTED,
+    build_segments, code_brush, plain_line_brush, prepare_display_line, text_pixel_width,
+    to_slint_segments, Side, GUTTER_INSERT, GUTTER_LINE, GUTTER_SELECTED,
 };
 
 const BYTE_LIMIT: &str = "32000000";
@@ -34,6 +36,7 @@ const MAX_APPLY_HISTORY: usize = 100;
 struct ViewData {
     diff: DiffFile,
     file_c_lines: Vec<String>,
+    file_c_syntax_blocks: Vec<SyntaxBlock>,
     triple_pane: bool,
 }
 
@@ -41,12 +44,14 @@ struct CliArgs {
     path_a: PathBuf,
     path_b: PathBuf,
     path_c: Option<PathBuf>,
+    difft: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DiffSide {
     Lhs,
     Rhs,
+    Center,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -99,24 +104,58 @@ fn cli_usage_error(got: usize) -> String {
 }
 
 fn parse_cli_args() -> Result<CliArgs, String> {
-    let paths: Vec<PathBuf> = env::args_os().skip(1).map(PathBuf::from).collect();
+    let mut difft = None;
+    let mut paths = Vec::new();
+    let mut args = env::args_os().skip(1);
+
+    while let Some(arg) = args.next() {
+        let key = arg.to_string_lossy();
+        match key.as_ref() {
+            "--help" | "-h" => return Err(usage()),
+            "--difft" => {
+                let Some(value) = args.next() else {
+                    return Err(format!("--difft requires a path.\n\n{}", usage()));
+                };
+                difft = Some(PathBuf::from(value));
+            }
+            _ if key.starts_with("--difft=") => {
+                let path = key.trim_start_matches("--difft=");
+                if path.is_empty() {
+                    return Err(format!("--difft requires a path.\n\n{}", usage()));
+                }
+                difft = Some(PathBuf::from(path));
+            }
+            _ if key.starts_with('-') => {
+                return Err(format!("unknown option: {key}\n\n{}", usage()));
+            }
+            _ => paths.push(PathBuf::from(arg)),
+        }
+    }
+
     match paths.len() {
         2 => Ok(CliArgs {
             path_a: paths[0].clone(),
             path_b: paths[1].clone(),
             path_c: None,
+            difft,
         }),
         3 => Ok(CliArgs {
             path_a: paths[0].clone(),
             path_b: paths[1].clone(),
             path_c: Some(paths[2].clone()),
+            difft,
         }),
         got => Err(cli_usage_error(got)),
     }
 }
 
-fn usage() -> &'static str {
-    "Usage: difft-file-viewer <file-a> <file-b> [<file-c>]"
+fn usage() -> String {
+    "Usage: difft-file-viewer [--difft PATH] <file-a> <file-b> [<file-c>]\n\
+     \n\
+     Options:\n\
+       --difft PATH   Path to the difft binary (overrides DIFT_PATH and auto-discovery)\n\
+       -h, --help     Show this help"
+        .to_owned()
 }
 
 fn full_path(path: PathBuf) -> PathBuf {
@@ -170,6 +209,7 @@ fn block_source_lines(diff: &DiffFile, side: DiffSide, start: u32, end: u32) -> 
         let line = match side {
             DiffSide::Lhs => aligned.lhs_line.map(|n| (n, aligned.lhs_text.clone())),
             DiffSide::Rhs => aligned.rhs_line.map(|n| (n, aligned.rhs_text.clone())),
+            DiffSide::Center => None,
         };
         if let Some((line_no, text)) = line {
             if start <= line_no && line_no <= end {
@@ -229,6 +269,86 @@ fn apply_block_to_file_c(
     Ok(())
 }
 
+fn file_c_block_lines(file_c_lines: &[String], start: u32, end: u32) -> Vec<String> {
+    let start = start as usize;
+    if start >= file_c_lines.len() {
+        return vec![];
+    }
+    let end = (end as usize).min(file_c_lines.len() - 1);
+    if start > end {
+        return vec![];
+    }
+    file_c_lines[start..=end].to_vec()
+}
+
+fn clear_block_in_file_c(file_c_lines: &mut [String], start: u32, end: u32) {
+    let start = start as usize;
+    if start >= file_c_lines.len() {
+        return;
+    }
+    let end = (end as usize).min(file_c_lines.len() - 1);
+    if start > end {
+        return;
+    }
+    for line in &mut file_c_lines[start..=end] {
+        line.clear();
+    }
+}
+
+fn delete_block_from_file_c(
+    file_c_lines: &mut Vec<String>,
+    start: u32,
+    end: u32,
+) -> Result<(), String> {
+    let block_lines = file_c_block_lines(file_c_lines, start, end);
+    if block_lines.is_empty() {
+        return Err("selected syntax block has no lines.".to_owned());
+    }
+    if block_lines.iter().all(|line| is_empty_line(line)) {
+        return Err("selected syntax block is already empty.".to_owned());
+    }
+    clear_block_in_file_c(file_c_lines, start, end);
+    Ok(())
+}
+
+fn move_block_in_file_c(
+    file_c_lines: &mut Vec<String>,
+    start: u32,
+    end: u32,
+    insert_at: usize,
+) -> Result<(), String> {
+    let block_lines = file_c_block_lines(file_c_lines, start, end);
+    if block_lines.is_empty() {
+        return Err("selected syntax block has no lines.".to_owned());
+    }
+    if block_lines.iter().all(|line| is_empty_line(line)) {
+        return Err("selected syntax block is already empty.".to_owned());
+    }
+    clear_block_in_file_c(file_c_lines, start, end);
+    prepare_insert_point(file_c_lines, insert_at);
+    let mut pos = insert_at;
+    for text in block_lines {
+        place_line_at(file_c_lines, pos, text);
+        pos += 1;
+    }
+    Ok(())
+}
+
+fn persist_file_c_edit(
+    view: &mut ViewData,
+    path_c: &Path,
+    snapshot: &[String],
+    apply_history: &Arc<Mutex<ApplyHistory>>,
+    difft_store: &Arc<Mutex<Option<PathBuf>>>,
+) -> Result<(), String> {
+    write_file_lines(path_c, &view.file_c_lines)?;
+    apply_history.lock().unwrap().push_snapshot(snapshot);
+    if let Some(difft) = difft_store.lock().unwrap().clone() {
+        refresh_file_c_syntax_blocks(view, &difft, path_c);
+    }
+    Ok(())
+}
+
 fn show_apply_on_line(
     triple_pane: bool,
     sel: Option<BlockSelection>,
@@ -239,6 +359,45 @@ fn show_apply_on_line(
         && sel.is_some_and(|s| {
             s.side == side && line.is_some_and(|ln| ln == s.start_line)
         })
+}
+
+fn show_center_delete(
+    triple_pane: bool,
+    sel: Option<BlockSelection>,
+    line: Option<u32>,
+) -> bool {
+    triple_pane
+        && sel.is_some_and(|s| {
+            s.side == DiffSide::Center && line.is_some_and(|ln| ln == s.start_line)
+        })
+}
+
+fn show_center_move(
+    triple_pane: bool,
+    sel: Option<BlockSelection>,
+    line: Option<u32>,
+) -> bool {
+    triple_pane
+        && sel.is_some_and(|s| {
+            s.side == DiffSide::Center
+                && line.is_some_and(|ln| ln == s.start_line.saturating_add(2))
+        })
+}
+
+fn center_line_for_row(view: &ViewData, row: usize) -> Option<u32> {
+    let aligned = view.diff.aligned_lines.get(row)?;
+    aligned.lhs_line.or(aligned.rhs_line)
+}
+
+fn center_row_matches_action(view: &ViewData, row: usize, sel: BlockSelection, move_action: bool) -> bool {
+    let Some(line) = center_line_for_row(view, row) else {
+        return false;
+    };
+    if move_action {
+        line == sel.start_line.saturating_add(2)
+    } else {
+        line == sel.start_line
+    }
 }
 
 fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<DiffFile, String> {
@@ -258,7 +417,7 @@ fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<DiffFile, Str
         .map_err(|e| format!("failed to run {}: {e}", difft.display()))?;
 
     if !output.stdout.is_empty() {
-        return parse_diff_json(&output.stdout);
+        return parse_diff_json(&output.stdout, path_a, path_b);
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -270,6 +429,32 @@ fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<DiffFile, Str
         "difft exited with status {} and produced no output.",
         output.status
     ))
+}
+
+fn run_dump_syntax_blocks(difft: &Path, path: &Path) -> Result<Vec<SyntaxBlock>, String> {
+    let output = difft_command(difft)
+        .arg("--dump-syntax-blocks")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("failed to run {}: {e}", difft.display()))?;
+
+    if !output.stdout.is_empty() {
+        return parse_syntax_blocks_json(&output.stdout).map(|file| file.syntax_blocks);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        return Err(stderr.trim().to_owned());
+    }
+
+    Err(format!(
+        "difft --dump-syntax-blocks exited with status {} and produced no output.",
+        output.status
+    ))
+}
+
+fn refresh_file_c_syntax_blocks(view: &mut ViewData, difft: &Path, path_c: &Path) {
+    view.file_c_syntax_blocks = run_dump_syntax_blocks(difft, path_c).unwrap_or_default();
 }
 
 /// Difft JSON line numbers are 0-based file indices; display 1-based like the terminal.
@@ -304,11 +489,14 @@ fn slint_line(
     sel: Option<BlockSelection>,
     apply_pending: bool,
 ) -> DiffLine {
-    let (center_line, center_text) = if view.triple_pane {
+    let (center_line, center_text_raw) = if view.triple_pane {
         center_line_for_aligned(line, &view.file_c_lines)
     } else {
         (-1, String::new())
     };
+    let (lhs_text, lhs_spans) = prepare_display_line(&line.lhs_text, &line.lhs_spans);
+    let (rhs_text, rhs_spans) = prepare_display_line(&line.rhs_text, &line.rhs_spans);
+    let (center_text, center_spans) = prepare_display_line(&center_text_raw, &[]);
 
     DiffLine {
         lhs_novel: line.is_novel_lhs,
@@ -318,30 +506,53 @@ fn slint_line(
         center_line,
         lhs_selected: line_in_selection(line.lhs_line, sel, DiffSide::Lhs),
         rhs_selected: line_in_selection(line.rhs_line, sel, DiffSide::Rhs),
-        center_selected: apply_pending && center_line >= 1,
+        center_selected: if apply_pending {
+            center_line >= 1
+        } else {
+            line_in_selection(
+                line.lhs_line.or(line.rhs_line),
+                sel,
+                DiffSide::Center,
+            )
+        },
         lhs_show_apply: show_apply_on_line(view.triple_pane, sel, DiffSide::Lhs, line.lhs_line),
         rhs_show_apply: show_apply_on_line(view.triple_pane, sel, DiffSide::Rhs, line.rhs_line),
-        lhs_plain_text: line.lhs_text.clone().into(),
-        rhs_plain_text: line.rhs_text.clone().into(),
+        center_show_delete: show_center_delete(
+            view.triple_pane,
+            sel,
+            line.lhs_line.or(line.rhs_line),
+        ),
+        center_show_move: show_center_move(
+            view.triple_pane,
+            sel,
+            line.lhs_line.or(line.rhs_line),
+        ),
+        lhs_plain_text: lhs_text.clone().into(),
+        rhs_plain_text: rhs_text.clone().into(),
         center_plain_text: center_text.clone().into(),
         lhs_plain_color: plain_line_brush(line.is_novel_lhs, Side::Left),
         rhs_plain_color: plain_line_brush(line.is_novel_rhs, Side::Right),
         center_plain_color: plain_line_brush(false, Side::Left),
         lhs_segments: to_slint_segments(&build_segments(
-            &line.lhs_text,
-            &line.lhs_spans,
+            &lhs_text,
+            &lhs_spans,
             line.is_novel_lhs,
             Side::Left,
         )),
         rhs_segments: to_slint_segments(&build_segments(
-            &line.rhs_text,
-            &line.rhs_spans,
+            &rhs_text,
+            &rhs_spans,
             line.is_novel_rhs,
             Side::Right,
         )),
-        center_segments: to_slint_segments(&build_segments(&center_text, &[], false, Side::Left)),
-        lhs_content_width: text_pixel_width(&line.lhs_text),
-        rhs_content_width: text_pixel_width(&line.rhs_text),
+        center_segments: to_slint_segments(&build_segments(
+            &center_text,
+            &center_spans,
+            false,
+            Side::Left,
+        )),
+        lhs_content_width: text_pixel_width(&lhs_text),
+        rhs_content_width: text_pixel_width(&rhs_text),
         center_content_width: text_pixel_width(&center_text),
     }
 }
@@ -403,6 +614,7 @@ fn blocks_for_side<'a>(file: &'a DiffFile, side: DiffSide) -> &'a [SyntaxBlock] 
     match side {
         DiffSide::Lhs => &file.lhs_syntax_blocks,
         DiffSide::Rhs => &file.rhs_syntax_blocks,
+        DiffSide::Center => &[],
     }
 }
 
@@ -443,6 +655,7 @@ fn handle_gutter_click(
     let line_0based = match side {
         DiffSide::Lhs => aligned.lhs_line,
         DiffSide::Rhs => aligned.rhs_line,
+        DiffSide::Center => return,
     };
     let Some(line_0based) = line_0based else {
         return;
@@ -513,6 +726,7 @@ fn handle_apply_click(
     let block_start = match side {
         DiffSide::Lhs => aligned.lhs_line,
         DiffSide::Rhs => aligned.rhs_line,
+        DiffSide::Center => return,
     };
     if block_start != Some(sel.start_line) {
         return;
@@ -525,18 +739,17 @@ fn handle_apply_click(
     );
 }
 
-fn handle_center_gutter_click(
+fn handle_center_apply_insert(
     ui: &MainWindow,
     row: i32,
+    sel: BlockSelection,
     view_store: &Arc<Mutex<Option<ViewData>>>,
     selection_store: &Arc<Mutex<Option<BlockSelection>>>,
     pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
     path_c_store: &Arc<Mutex<Option<PathBuf>>>,
     apply_history: &Arc<Mutex<ApplyHistory>>,
+    difft_store: &Arc<Mutex<Option<PathBuf>>>,
 ) {
-    let Some(sel) = pending_apply_store.lock().unwrap().take() else {
-        return;
-    };
     if row < 0 {
         *pending_apply_store.lock().unwrap() = Some(sel);
         return;
@@ -573,13 +786,18 @@ fn handle_center_gutter_click(
     let snapshot = view.file_c_lines.clone();
     match apply_block_to_file_c(&mut view.file_c_lines, &view.diff, sel, insert_at) {
         Ok(()) => {
-            if let Err(err) = write_file_lines(&path_c, &view.file_c_lines) {
+            if let Err(err) = persist_file_c_edit(
+                &mut view,
+                &path_c,
+                &snapshot,
+                apply_history,
+                difft_store,
+            ) {
                 view.file_c_lines = snapshot;
                 *pending_apply_store.lock().unwrap() = Some(sel);
                 ui.set_file_info(err.into());
                 return;
             }
-            apply_history.lock().unwrap().push_snapshot(&snapshot);
             *view_store.lock().unwrap() = Some(view.clone());
             let sel = *selection_store.lock().unwrap();
             ui.set_apply_pending(false);
@@ -594,6 +812,294 @@ fn handle_center_gutter_click(
     }
 }
 
+fn handle_center_block_select(
+    ui: &MainWindow,
+    row: i32,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+) {
+    if row < 0 {
+        *selection_store.lock().unwrap() = None;
+        if let Some(view) = view_store.lock().unwrap().clone() {
+            set_lines_on_ui(ui, &view, None, false);
+        }
+        return;
+    }
+
+    let Some(view) = view_store.lock().unwrap().clone() else {
+        return;
+    };
+    if !view.triple_pane {
+        return;
+    }
+
+    let row = row as usize;
+    let Some(aligned) = view.diff.aligned_lines.get(row) else {
+        return;
+    };
+    let Some(line_0based) = aligned.lhs_line.or(aligned.rhs_line) else {
+        return;
+    };
+
+    let Some(block) = gutter_syntax_block(&view.file_c_syntax_blocks, line_0based) else {
+        return;
+    };
+
+    let mut selection = selection_store.lock().unwrap();
+    if selection.is_some_and(|prev| prev.side == DiffSide::Center && prev.block_id == block.id) {
+        *selection = None;
+        set_lines_on_ui(ui, &view, None, false);
+        return;
+    }
+
+    let new_sel = BlockSelection {
+        side: DiffSide::Center,
+        block_id: block.id,
+        start_line: block.start_line,
+        end_line: block.end_line,
+    };
+    *selection = Some(new_sel);
+    set_lines_on_ui(ui, &view, Some(new_sel), false);
+}
+
+fn handle_center_move_insert(
+    ui: &MainWindow,
+    row: i32,
+    sel: BlockSelection,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
+    path_c_store: &Arc<Mutex<Option<PathBuf>>>,
+    apply_history: &Arc<Mutex<ApplyHistory>>,
+    difft_store: &Arc<Mutex<Option<PathBuf>>>,
+) {
+    if row < 0 {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    }
+
+    let Some(mut view) = view_store.lock().unwrap().clone() else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    };
+    if !view.triple_pane {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    }
+
+    let row = row as usize;
+    let Some(aligned) = view.diff.aligned_lines.get(row) else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        return;
+    };
+    let insert_line = aligned.lhs_line.or(aligned.rhs_line);
+    let Some(insert_line) = insert_line else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        ui.set_file_info("Choose a file C row with a line number.".into());
+        return;
+    };
+    let insert_at = insert_line as usize;
+
+    let Some(path_c) = path_c_store.lock().unwrap().clone() else {
+        *pending_apply_store.lock().unwrap() = Some(sel);
+        ui.set_file_info("Move requires a file-c path.".into());
+        return;
+    };
+
+    let snapshot = view.file_c_lines.clone();
+    match move_block_in_file_c(
+        &mut view.file_c_lines,
+        sel.start_line,
+        sel.end_line,
+        insert_at,
+    ) {
+        Ok(()) => {
+            if let Err(err) = persist_file_c_edit(
+                &mut view,
+                &path_c,
+                &snapshot,
+                apply_history,
+                difft_store,
+            ) {
+                view.file_c_lines = snapshot;
+                *pending_apply_store.lock().unwrap() = Some(sel);
+                ui.set_file_info(err.into());
+                return;
+            }
+            *view_store.lock().unwrap() = Some(view.clone());
+            *selection_store.lock().unwrap() = None;
+            ui.set_apply_pending(false);
+            set_lines_on_ui(ui, &view, None, false);
+            ui.set_file_info(
+                format!(
+                    "Moved block in {} to line {}.",
+                    path_c.display(),
+                    insert_at + 1
+                )
+                .into(),
+            );
+        }
+        Err(err) => {
+            *pending_apply_store.lock().unwrap() = Some(sel);
+            refresh_diff_ui(ui, view_store, selection_store, pending_apply_store);
+            ui.set_file_info(err.into());
+        }
+    }
+}
+
+fn handle_center_delete_click(
+    ui: &MainWindow,
+    row: i32,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    path_c_store: &Arc<Mutex<Option<PathBuf>>>,
+    apply_history: &Arc<Mutex<ApplyHistory>>,
+    difft_store: &Arc<Mutex<Option<PathBuf>>>,
+) {
+    if row < 0 {
+        return;
+    }
+
+    let Some(sel) = *selection_store.lock().unwrap() else {
+        return;
+    };
+    if sel.side != DiffSide::Center {
+        return;
+    }
+
+    let Some(view) = view_store.lock().unwrap().clone() else {
+        return;
+    };
+    if !view.triple_pane {
+        return;
+    }
+
+    let row = row as usize;
+    if !center_row_matches_action(&view, row, sel, false) {
+        return;
+    }
+
+    let Some(path_c) = path_c_store.lock().unwrap().clone() else {
+        ui.set_file_info("Delete requires a file-c path.".into());
+        return;
+    };
+
+    let Some(mut view) = view_store.lock().unwrap().clone() else {
+        return;
+    };
+    let snapshot = view.file_c_lines.clone();
+    match delete_block_from_file_c(&mut view.file_c_lines, sel.start_line, sel.end_line) {
+        Ok(()) => {
+            if let Err(err) = persist_file_c_edit(
+                &mut view,
+                &path_c,
+                &snapshot,
+                apply_history,
+                difft_store,
+            ) {
+                view.file_c_lines = snapshot;
+                ui.set_file_info(err.into());
+                return;
+            }
+            *view_store.lock().unwrap() = Some(view.clone());
+            *selection_store.lock().unwrap() = None;
+            set_lines_on_ui(ui, &view, None, false);
+            ui.set_file_info(
+                format!(
+                    "Deleted block in {} (lines {}–{}).",
+                    path_c.display(),
+                    sel.start_line + 1,
+                    sel.end_line + 1
+                )
+                .into(),
+            );
+        }
+        Err(err) => ui.set_file_info(err.into()),
+    }
+}
+
+fn handle_center_move_click(
+    ui: &MainWindow,
+    row: i32,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
+) {
+    if pending_apply_store.lock().unwrap().is_some() {
+        return;
+    }
+
+    if row < 0 {
+        return;
+    }
+
+    let Some(sel) = *selection_store.lock().unwrap() else {
+        return;
+    };
+    if sel.side != DiffSide::Center {
+        return;
+    }
+
+    let Some(view) = view_store.lock().unwrap().clone() else {
+        return;
+    };
+    if !view.triple_pane {
+        return;
+    }
+
+    let row = row as usize;
+    if !center_row_matches_action(&view, row, sel, true) {
+        return;
+    }
+
+    *pending_apply_store.lock().unwrap() = Some(sel);
+    refresh_diff_ui(ui, view_store, selection_store, pending_apply_store);
+    ui.set_file_info(
+        "Click a line number in file C to move the block, or press Esc to cancel.".into(),
+    );
+}
+
+fn handle_center_gutter_click(
+    ui: &MainWindow,
+    row: i32,
+    view_store: &Arc<Mutex<Option<ViewData>>>,
+    selection_store: &Arc<Mutex<Option<BlockSelection>>>,
+    pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
+    path_c_store: &Arc<Mutex<Option<PathBuf>>>,
+    apply_history: &Arc<Mutex<ApplyHistory>>,
+    difft_store: &Arc<Mutex<Option<PathBuf>>>,
+) {
+    if let Some(sel) = pending_apply_store.lock().unwrap().take() {
+        match sel.side {
+            DiffSide::Center => handle_center_move_insert(
+                ui,
+                row,
+                sel,
+                view_store,
+                selection_store,
+                pending_apply_store,
+                path_c_store,
+                apply_history,
+                difft_store,
+            ),
+            _ => handle_center_apply_insert(
+                ui,
+                row,
+                sel,
+                view_store,
+                selection_store,
+                pending_apply_store,
+                path_c_store,
+                apply_history,
+                difft_store,
+            ),
+        }
+        return;
+    }
+
+    handle_center_block_select(ui, row, view_store, selection_store);
+}
+
 fn handle_apply_cancel(
     ui: &MainWindow,
     view_store: &Arc<Mutex<Option<ViewData>>>,
@@ -604,7 +1110,7 @@ fn handle_apply_cancel(
         return;
     }
     refresh_diff_ui(ui, view_store, selection_store, pending_apply_store);
-    ui.set_file_info("Apply cancelled.".into());
+    ui.set_file_info("Cancelled.".into());
 }
 
 fn handle_quit_request(
@@ -632,6 +1138,7 @@ fn handle_quit_request(
         }
     }
 
+    clang_format_preprocess::cleanup_cache();
     let _ = slint::quit_event_loop();
 }
 
@@ -642,6 +1149,7 @@ fn handle_apply_undo(
     pending_apply_store: &Arc<Mutex<Option<BlockSelection>>>,
     path_c_store: &Arc<Mutex<Option<PathBuf>>>,
     apply_history: &Arc<Mutex<ApplyHistory>>,
+    difft_store: &Arc<Mutex<Option<PathBuf>>>,
 ) {
     pending_apply_store.lock().unwrap().take();
     ui.set_apply_pending(false);
@@ -669,15 +1177,18 @@ fn handle_apply_undo(
         return;
     }
 
+    if let Some(difft) = difft_store.lock().unwrap().clone() {
+        refresh_file_c_syntax_blocks(&mut view, &difft, &path_c);
+    }
+
     *view_store.lock().unwrap() = Some(view.clone());
     let sel = *selection_store.lock().unwrap();
     set_lines_on_ui(ui, &view, sel, false);
     ui.set_file_info(format!("Undid last Apply on {}.", path_c.display()).into());
 }
 
-fn set_path_label(ui: &MainWindow, property: fn(&MainWindow, slint::SharedString), path: PathBuf) {
-    let path = full_path(path);
-    property(ui, path.display().to_string().into());
+fn set_path_label(ui: &MainWindow, property: fn(&MainWindow, slint::SharedString), label: &str) {
+    property(ui, label.into());
 }
 
 fn run_diff(
@@ -716,17 +1227,23 @@ fn run_diff(
 
         let outcome: Result<ViewData, String> = (|| {
             let diff = run_difft(&difft_path, &diff_path_a, &diff_path_b)?;
+            let path_c_ref = path_c.as_ref();
             let file_c_lines = if triple_pane {
-                let path_c = path_c.ok_or_else(|| "internal error: missing file-c path".to_string())?;
-                open_or_create_file_lines(&path_c)?
+                let path_c = path_c_ref.ok_or_else(|| "internal error: missing file-c path".to_string())?;
+                open_or_create_file_lines(path_c)?
             } else {
                 vec![]
             };
-            Ok(ViewData {
+            let mut view = ViewData {
                 diff,
                 file_c_lines,
+                file_c_syntax_blocks: vec![],
                 triple_pane,
-            })
+            };
+            if let Some(path_c) = path_c_ref {
+                refresh_file_c_syntax_blocks(&mut view, &difft_path, path_c);
+            }
+            Ok(view)
         })();
 
         let _ = slint::invoke_from_event_loop(move || {
@@ -801,34 +1318,45 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(target_os = "macos")]
     schedule_application_icon();
 
-    let (path_a, path_b, path_c, triple_pane) = match &cli {
+    let (path_a, path_b, path_c, label_a, label_b, label_c, triple_pane) = match &cli {
         Ok(args) => {
             ui.set_triple_pane(args.path_c.is_some());
             (
                 Some(full_path(args.path_a.clone())),
                 Some(full_path(args.path_b.clone())),
                 args.path_c.clone().map(full_path),
+                Some(args.path_a.display().to_string()),
+                Some(args.path_b.display().to_string()),
+                args.path_c
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
                 args.path_c.is_some(),
             )
         }
         Err(err) => {
             ui.set_triple_pane(false);
             ui.set_file_info(err.clone().into());
-            (None, None, None, false)
+            (None, None, None, None, None, None, false)
         }
     };
 
-    if let Some(path_a) = &path_a {
-        set_path_label(&ui, MainWindow::set_path_a, path_a.clone());
+    if let Some(label) = &label_a {
+        set_path_label(&ui, MainWindow::set_path_a, label);
     }
-    if let Some(path_b) = &path_b {
-        set_path_label(&ui, MainWindow::set_path_b, path_b.clone());
+    if let Some(label) = &label_b {
+        set_path_label(&ui, MainWindow::set_path_b, label);
     }
-    if let Some(path_c) = &path_c {
-        set_path_label(&ui, MainWindow::set_path_c, path_c.clone());
+    if let Some(label) = &label_c {
+        set_path_label(&ui, MainWindow::set_path_c, label);
     }
 
-    let difft = Arc::new(Mutex::new(probe_difft().ok()));
+    let difft = Arc::new(Mutex::new(
+        cli.as_ref()
+            .ok()
+            .and_then(|args| args.difft.clone())
+            .and_then(|path| resolve_difft(Some(path)).ok())
+            .or_else(|| resolve_difft(None).ok()),
+    ));
     let view_store: Arc<Mutex<Option<ViewData>>> = Arc::new(Mutex::new(None));
     let selection_store: Arc<Mutex<Option<BlockSelection>>> = Arc::new(Mutex::new(None));
     let pending_apply_store: Arc<Mutex<Option<BlockSelection>>> = Arc::new(Mutex::new(None));
@@ -891,6 +1419,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let pending_apply_store = Arc::clone(&pending_apply_store);
         let path_c_store = Arc::clone(&path_c_store);
         let apply_history = Arc::clone(&apply_history);
+        let difft_store = Arc::clone(&difft);
         ui.on_center_gutter_clicked(move |row| {
             if let Some(ui) = ui_handle.upgrade() {
                 handle_center_gutter_click(
@@ -901,6 +1430,47 @@ fn main() -> Result<(), slint::PlatformError> {
                     &pending_apply_store,
                     &path_c_store,
                     &apply_history,
+                    &difft_store,
+                );
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        let view_store = Arc::clone(&view_store);
+        let selection_store = Arc::clone(&selection_store);
+        let path_c_store = Arc::clone(&path_c_store);
+        let apply_history = Arc::clone(&apply_history);
+        let difft_store = Arc::clone(&difft);
+        ui.on_center_delete_clicked(move |row| {
+            if let Some(ui) = ui_handle.upgrade() {
+                handle_center_delete_click(
+                    &ui,
+                    row,
+                    &view_store,
+                    &selection_store,
+                    &path_c_store,
+                    &apply_history,
+                    &difft_store,
+                );
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        let view_store = Arc::clone(&view_store);
+        let selection_store = Arc::clone(&selection_store);
+        let pending_apply_store = Arc::clone(&pending_apply_store);
+        ui.on_center_move_clicked(move |row| {
+            if let Some(ui) = ui_handle.upgrade() {
+                handle_center_move_click(
+                    &ui,
+                    row,
+                    &view_store,
+                    &selection_store,
+                    &pending_apply_store,
                 );
             }
         });
@@ -930,6 +1500,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let pending_apply_store = Arc::clone(&pending_apply_store);
         let path_c_store = Arc::clone(&path_c_store);
         let apply_history = Arc::clone(&apply_history);
+        let difft_store = Arc::clone(&difft);
         ui.on_apply_undo_requested(move || {
             if let Some(ui) = ui_handle.upgrade() {
                 handle_apply_undo(
@@ -939,6 +1510,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     &pending_apply_store,
                     &path_c_store,
                     &apply_history,
+                    &difft_store,
                 );
             }
         });
@@ -1226,6 +1798,47 @@ mod apply_tests {
                 "x".to_owned(),
                 "y".to_owned(),
                 "b".to_owned(),
+                "c".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_block_clears_selected_lines() {
+        let mut file_c = vec![
+            "a".to_owned(),
+            "block".to_owned(),
+            "end".to_owned(),
+            "tail".to_owned(),
+        ];
+        delete_block_from_file_c(&mut file_c, 1, 2).unwrap();
+        assert_eq!(
+            file_c,
+            vec![
+                "a".to_owned(),
+                String::new(),
+                String::new(),
+                "tail".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn move_block_reinserts_at_target_line() {
+        let mut file_c = vec![
+            "a".to_owned(),
+            "move-me".to_owned(),
+            "b".to_owned(),
+            "c".to_owned(),
+        ];
+        move_block_in_file_c(&mut file_c, 1, 1, 3).unwrap();
+        assert_eq!(
+            file_c,
+            vec![
+                "a".to_owned(),
+                String::new(),
+                "b".to_owned(),
+                "move-me".to_owned(),
                 "c".to_owned(),
             ]
         );

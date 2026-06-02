@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,10 @@ const CLANG_FORMAT: &str = "clang-format";
 const CLANG_FORMAT_CONFIG: &str = ".clangformat";
 const CLANG_FORMAT_CACHE: &str = ".clangformat.cache";
 const CLANG_FORMAT_CACHE_DIR: &str = ".clangformat.cache.d";
+/// Filename clang-format looks for when using `-style=file` (copied from [CLANG_FORMAT_CONFIG]).
+const CLANG_FORMAT_CACHE_CONFIG: &str = ".clang-format";
+/// Bump when clang-format invocation or cache layout changes (invalidates stale copies).
+const FORMAT_CACHE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct FileMtime {
@@ -22,8 +28,10 @@ struct FileMtime {
     modified_nanos: u32,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct FormatCache {
+    #[serde(default)]
+    version: u32,
     config: Option<FileMtime>,
     entries: HashMap<String, FileMtime>,
 }
@@ -33,7 +41,7 @@ pub fn formatting_enabled() -> bool {
     non_empty_clang_format_in_cwd().is_some() && clang_format_available()
 }
 
-/// Returns whether `q` quit should spawn a background format for `file_c`.
+/// Returns whether quit should format `file_c`.
 pub fn should_format_file_c(path_c: &Path) -> bool {
     formatting_enabled() && is_c_cpp_file(path_c)
 }
@@ -49,22 +57,24 @@ pub fn try_format_file_c(path_c: &Path, lines: &[String]) -> Option<Result<Vec<S
     Some(format_lines_in_memory(&config, path_c, lines))
 }
 
-/// Sync `file_c` to disk, then spawn a detached `clang-format -i` using `./.clangformat`.
+/// Write formatted `file_c` using `./.clangformat` (via cache-dir `.clang-format` copy).
 pub fn spawn_detached_format_file_c(path_c: &Path, lines: &[String]) -> Result<(), String> {
     if !should_format_file_c(path_c) {
         return Ok(());
     }
     let config = non_empty_clang_format_in_cwd()
         .ok_or_else(|| "missing non-empty .clangformat in cwd".to_owned())?;
-    write_lines(path_c, lines)?;
-    let style = format!("-style=file:{}", config.display());
-    crate::difft_probe::spawn_detached_command(CLANG_FORMAT)
-        .arg(style)
-        .arg("-i")
-        .arg(path_c)
-        .spawn()
-        .map_err(|e| format!("failed to spawn clang-format: {e}"))?;
-    Ok(())
+    let formatted = format_lines_in_memory(&config, path_c, lines)?;
+    write_lines(path_c, &formatted)
+}
+
+/// Remove `./.clangformat.cache.d/` and `./.clangformat.cache` from cwd (best-effort).
+pub fn cleanup_cache() {
+    let Ok(cwd) = env::current_dir() else {
+        return;
+    };
+    let _ = fs::remove_dir_all(cwd.join(CLANG_FORMAT_CACHE_DIR));
+    let _ = fs::remove_file(cwd.join(CLANG_FORMAT_CACHE));
 }
 
 fn write_lines(path: &Path, lines: &[String]) -> Result<(), String> {
@@ -210,15 +220,27 @@ fn file_mtime(path: &Path) -> Result<FileMtime, String> {
 
 fn load_cache(cwd: &Path) -> FormatCache {
     let path = cwd.join(CLANG_FORMAT_CACHE);
-    fs::read_to_string(&path)
+    let cache: FormatCache = fs::read_to_string(&path)
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if cache.version != FORMAT_CACHE_VERSION {
+        let _ = fs::remove_dir_all(cwd.join(CLANG_FORMAT_CACHE_DIR));
+        return FormatCache {
+            version: FORMAT_CACHE_VERSION,
+            ..Default::default()
+        };
+    }
+    cache
 }
 
 fn save_cache(cwd: &Path, cache: &FormatCache) -> Result<(), String> {
     let path = cwd.join(CLANG_FORMAT_CACHE);
-    let content = serde_json::to_string_pretty(cache)
+    let cache = FormatCache {
+        version: FORMAT_CACHE_VERSION,
+        ..cache.clone()
+    };
+    let content = serde_json::to_string_pretty(&cache)
         .map_err(|e| format!("failed to encode {}: {e}", path.display()))?;
     fs::write(&path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
@@ -239,6 +261,14 @@ fn clang_format_available() -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+fn sync_cache_config(cache_dir: &Path, config: &Path) -> Result<(), String> {
+    fs::create_dir_all(cache_dir)
+        .map_err(|e| format!("failed to create {}: {e}", cache_dir.display()))?;
+    fs::copy(config, cache_dir.join(CLANG_FORMAT_CACHE_CONFIG))
+        .map_err(|e| format!("failed to copy {}: {e}", config.display()))?;
+    Ok(())
 }
 
 fn format_lines_in_memory(
@@ -284,12 +314,43 @@ fn format_file_to_cache(config: &Path, file: &Path, out: &Path) -> Result<(), St
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
 
-    let style = format!("-style=file:{}", config.display());
-    let output = subprocess_command(CLANG_FORMAT)
-        .arg(style)
-        .arg(file)
-        .output()
+    let cache_dir = out
+        .parent()
+        .ok_or_else(|| "clang-format cache dir missing".to_owned())?;
+    sync_cache_config(cache_dir, config)?;
+
+    let content = fs::read_to_string(file)
+        .map_err(|e| format!("failed to read {}: {e}", file.display()))?;
+    let ext = file
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("txt");
+    let assume_filename = cache_dir.join(format!("_fmt.{ext}"));
+
+    // clang-format only recognizes `.clang-format`; `-style=file:.clangformat` fails on Windows.
+    // Copy viewer config into the cache dir and point `-assume-filename` there so lookup works
+    // for sources on any path (including network drives).
+    let mut cmd = subprocess_command(CLANG_FORMAT);
+    cmd.arg("-style=file")
+        .arg("-assume-filename")
+        .arg(&assume_filename)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("failed to run {CLANG_FORMAT}: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "clang-format stdin unavailable".to_owned())?
+        .write_all(content.as_bytes())
+        .map_err(|e| format!("failed to write clang-format stdin: {e}"))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to wait for {CLANG_FORMAT}: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -330,6 +391,7 @@ mod tests {
     #[test]
     fn format_cache_roundtrip_json() {
         let cache = FormatCache {
+            version: FORMAT_CACHE_VERSION,
             config: Some(FileMtime {
                 modified_secs: 1,
                 modified_nanos: 2,

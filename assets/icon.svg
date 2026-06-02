@@ -23,8 +23,8 @@
     <circle cx="190" cy="268" r="58" fill="#f8f8f2" fill-opacity="0.2" stroke="none"/>
     <circle cx="322" cy="268" r="58" fill="#f8f8f2" fill-opacity="0.2" stroke="none"/>
 
-    <!-- frame + bridge + temples (0% transparent) -->
-    <g stroke="#f8f8f2" stroke-width="14">
+    <!-- frame + bridge + temples (black) -->
+    <g stroke="#000000" stroke-width="14">
       <circle cx="190" cy="268" r="58"/>
       <circle cx="322" cy="268" r="58"/>
       <path d="M 248 250 Q 256 262 264 250"/>

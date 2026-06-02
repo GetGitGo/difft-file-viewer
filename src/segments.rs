@@ -3,6 +3,8 @@
 use serde::Deserialize;
 use slint::{Brush, Color, SharedString};
 
+pub const TAB_WIDTH: usize = 4;
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Highlight {
@@ -161,6 +163,72 @@ pub fn build_segments(
     merge_segments(segments)
 }
 
+/// Expand tabs to spaces for display. Slint renders `\t` as missing-glyph boxes.
+pub fn expand_tabs_display(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut col = 0usize;
+    for ch in line.chars() {
+        if ch == '\t' {
+            let spaces = TAB_WIDTH - (col % TAB_WIDTH);
+            out.extend(std::iter::repeat_n(' ', spaces));
+            col += spaces;
+        } else {
+            out.push(ch);
+            col += 1;
+        }
+    }
+    out
+}
+
+fn orig_index_to_display_col(line: &str, index: usize) -> u32 {
+    let mut col = 0u32;
+    for (i, ch) in line.chars().enumerate() {
+        if i >= index {
+            break;
+        }
+        if ch == '\t' {
+            col += (TAB_WIDTH - (col as usize % TAB_WIDTH)) as u32;
+        } else {
+            col += 1;
+        }
+    }
+    col
+}
+
+/// Remap span columns after tab expansion and refresh span text slices.
+pub fn remap_spans_for_tabs(line: &str, spans: &[TextSpan]) -> Vec<TextSpan> {
+    let display = expand_tabs_display(line);
+    spans
+        .iter()
+        .map(|span| {
+            let start = orig_index_to_display_col(line, span.start as usize);
+            let end = orig_index_to_display_col(line, span.end as usize);
+            let start_usize = start as usize;
+            let end_usize = end as usize;
+            let content = if start_usize < display.len() {
+                display[start_usize..end_usize.min(display.len())].to_owned()
+            } else {
+                span.content.clone()
+            };
+            TextSpan {
+                start,
+                end,
+                content,
+                ..span.clone()
+            }
+        })
+        .collect()
+}
+
+pub fn prepare_display_line(line: &str, spans: &[TextSpan]) -> (String, Vec<TextSpan>) {
+    if !line.contains('\t') {
+        return (line.to_owned(), spans.to_vec());
+    }
+    let display = expand_tabs_display(line);
+    let spans = remap_spans_for_tabs(line, spans);
+    (display, spans)
+}
+
 fn brush_from_hex(hex: &str) -> Brush {
     let hex = hex.trim_start_matches('#');
     let value = u32::from_str_radix(hex, 16).unwrap_or(0xf8f8f2);
@@ -172,7 +240,7 @@ fn brush_from_hex(hex: &str) -> Brush {
 }
 
 /// Approximate advance width for "Courier New" 12px in the viewer.
-pub const CHAR_WIDTH: f32 = 7.2;
+pub const CHAR_WIDTH: f32 = 7.85;
 
 pub const GUTTER_LINE: &str = "#6272a4";
 pub const GUTTER_SELECTED: &str = "#bd93f9";
@@ -209,7 +277,7 @@ pub fn plain_line_brush(novel: bool, side: Side) -> Brush {
 }
 
 pub fn text_pixel_width(text: &str) -> f32 {
-    text.chars().count() as f32 * CHAR_WIDTH
+    expand_tabs_display(text).chars().count() as f32 * CHAR_WIDTH
 }
 
 pub fn to_slint_segments(segments: &[Segment]) -> slint::ModelRc<crate::TextSegment> {
@@ -266,6 +334,34 @@ mod tests {
     fn adjust_brightness_scales_rgb() {
         assert_eq!(adjust_brightness_hex("#808080", 1.5), "#c0c0c0");
         assert_eq!(adjust_brightness_hex("#ffffff", 0.5), "#808080");
+    }
+
+    #[test]
+    fn expand_tabs_replaces_leading_indent() {
+        assert_eq!(expand_tabs_display("\tif (x)"), "    if (x)");
+        assert_eq!(expand_tabs_display("\t\treturn;"), "        return;");
+    }
+
+    #[test]
+    fn remap_spans_after_tab_expansion() {
+        let line = "\tif x";
+        let spans = vec![TextSpan {
+            start: 1,
+            end: 3,
+            content: "if".into(),
+            highlight: Highlight::Keyword,
+            is_novel: false,
+        }];
+        let (display, remapped) = prepare_display_line(line, &spans);
+        assert_eq!(display, "    if x");
+        assert_eq!(remapped[0].start, 4);
+        assert_eq!(remapped[0].end, 6);
+        assert_eq!(remapped[0].content, "if");
+    }
+
+    #[test]
+    fn text_pixel_width_counts_expanded_tabs() {
+        assert_eq!(text_pixel_width("\t\t"), 8.0 * CHAR_WIDTH);
     }
 
     #[test]

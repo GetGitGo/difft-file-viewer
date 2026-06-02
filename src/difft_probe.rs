@@ -82,6 +82,21 @@ fn first_working_path(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBu
 fn candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
+    if let Ok(cwd) = env::current_dir() {
+        paths.push(
+            cwd.join("difftastic")
+                .join("target")
+                .join("debug")
+                .join(difft_binary_name()),
+        );
+        paths.push(
+            cwd.join("difftastic")
+                .join("target")
+                .join("release")
+                .join(difft_binary_name()),
+        );
+    }
+
     if let Ok(path) = env::var("DIFT_PATH") {
         paths.extend(difft_path_variants(PathBuf::from(path)));
     }
@@ -122,9 +137,9 @@ pub fn install_message() -> String {
              \n\
               brew install difftastic{VERIFY_STEP}\n\
              \n\
-             Or build from this repository:\n\
-              cargo build -p difftastic\n\
-              export DIFT_PATH=\"$(pwd)/target/debug/difft\"\n\
+             Or build the sibling clone in this repo:\n\
+              cargo build --manifest-path difftastic/Cargo.toml\n\
+              difft-file-viewer --difft difftastic/target/debug/difft file-a file-b\n\
              \n\
              Or set DIFT_PATH to the full path of an existing difft binary."
         )
@@ -136,9 +151,9 @@ pub fn install_message() -> String {
               winget install Wilfred.difftastic\n\
               choco install difftastic{VERIFY_STEP}\n\
              \n\
-             Or build from this repository:\n\
-              cargo build -p difftastic\n\
-              set DIFT_PATH=%CD%\\target\\debug\\difft.exe\n\
+             Or build the sibling clone in this repo:\n\
+              cargo build --manifest-path difftastic/Cargo.toml\n\
+              difft-file-viewer --difft difftastic\\target\\debug\\difft.exe file-a file-b\n\
              \n\
              Or set DIFT_PATH to the full path of an existing difft.exe."
         )
@@ -151,13 +166,27 @@ pub fn install_message() -> String {
               sudo dnf install difftastic      # Fedora\n\
               sudo pkg install difftastic      # FreeBSD{VERIFY_STEP}\n\
              \n\
-             Or build from this repository:\n\
-              cargo build -p difftastic\n\
-              export DIFT_PATH=\"$(pwd)/target/debug/difft\"\n\
+             Or build the sibling clone in this repo:\n\
+              cargo build --manifest-path difftastic/Cargo.toml\n\
+              difft-file-viewer --difft difftastic/target/debug/difft file-a file-b\n\
              \n\
              Or set DIFT_PATH to the full path of an existing difft binary."
         )
     }
+}
+
+pub fn resolve_difft(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        if let Some(resolved) = first_working_path(difft_path_variants(path.clone())) {
+            return Ok(resolved);
+        }
+        return Err(format!(
+            "--difft does not point to a working difft binary: {}\n\n{}",
+            path.display(),
+            install_message()
+        ));
+    }
+    probe_difft()
 }
 
 pub fn probe_difft() -> Result<PathBuf, String> {
