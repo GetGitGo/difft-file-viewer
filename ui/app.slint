@@ -1,5 +1,53 @@
 import { VerticalBox, HorizontalBox, ListView } from "std-widgets.slint";
 
+/// Wheel/trackpad scrolling with velocity decay (keyboard/page keys stay instant via set-instant).
+component SmoothScroll1D {
+    in-out property <length> offset: 0px;
+    in property <length> min-offset: 0px;
+    in property <length> max-offset: 0px;
+
+    private property <float> velocity: 0;
+    private property <bool> running: false;
+    private property <float> friction: 0.86;
+    private property <float> wheel-gain: 0.55;
+
+    changed min-offset => {
+        root.offset = root.clamp-offset(root.offset);
+    }
+
+    changed max-offset => {
+        root.offset = root.clamp-offset(root.offset);
+    }
+
+    pure function clamp-offset(value: length) -> length {
+        min(root.max-offset, max(root.min-offset, value))
+    }
+
+    tick := Timer {
+        interval: 16ms;
+        running: root.running;
+        triggered => {
+            root.offset = root.clamp-offset(root.offset + root.velocity * 1px);
+            root.velocity = root.velocity * root.friction;
+            if (root.velocity > -0.35 && root.velocity < 0.35) {
+                root.velocity = 0;
+                root.running = false;
+            }
+        }
+    }
+
+    public function add-impulse(delta: length) {
+        root.velocity = root.velocity + (delta / 1px) * root.wheel-gain;
+        root.running = true;
+    }
+
+    public function set-instant(value: length) {
+        root.velocity = 0;
+        root.running = false;
+        root.offset = root.clamp-offset(value);
+    }
+}
+
 export struct TextSegment {
     text: string,
     color: brush,
@@ -72,7 +120,7 @@ component ActionButton inherits Rectangle {
     callback clicked();
 
     width: 42px;
-    height: 17px;
+    height: 15px;
 
     private property <brush> shadow-color: root.tone == ActionButtonTone.red ? #7a1515 : #9a7b00;
     private property <brush> normal-face: root.tone == ActionButtonTone.red ? #ff5555 : #ffea00;
@@ -145,7 +193,7 @@ component CodeSide inherits Rectangle {
     in property <bool> show-center-move: false;
     in property <bool> gutter-enabled: true;
     in property <bool> insert-target: false;
-    in property <length> line-height: 20px;
+    in property <length> line-height: 16px;
     in property <length> code-font-size: 12px;
     in property <brush> gutter-line-color: #6272a4;
     in property <brush> gutter-selected-color: #bd93f9;
@@ -157,6 +205,9 @@ component CodeSide inherits Rectangle {
     callback delete-clicked();
     callback move-clicked();
     callback horizontal-scroll(delta: length);
+    callback vertical-scroll(delta: length);
+
+    private property <length> action-button-height: 15px;
 
     pure function is-horizontal-scroll(event: PointerScrollEvent) -> bool {
         (event.delta-x < 0px ? -event.delta-x : event.delta-x) > 0px
@@ -216,6 +267,10 @@ component CodeSide inherits Rectangle {
                     root.horizontal-scroll(-event.delta-x);
                     return accept;
                 }
+                if (event.delta-y != 0px) {
+                    root.vertical-scroll(event.delta-y);
+                    return accept;
+                }
                 return reject;
             }
         }
@@ -266,7 +321,7 @@ component CodeSide inherits Rectangle {
 
         if (root.show-apply): ApplyButton {
             x: 1px;
-            y: (root.line-height - 17px) / 2;
+            y: (root.line-height - root.action-button-height) / 2;
             clicked => {
                 root.apply-clicked();
             }
@@ -274,7 +329,7 @@ component CodeSide inherits Rectangle {
 
         if (root.show-center-delete): ActionButton {
             x: 0px;
-            y: (root.line-height - 17px) / 2;
+            y: (root.line-height - root.action-button-height) / 2;
             width: 46px;
             label: "Delete";
             tone: ActionButtonTone.red;
@@ -285,7 +340,7 @@ component CodeSide inherits Rectangle {
 
         if (root.show-center-move): ActionButton {
             x: 0px;
-            y: (root.line-height - 17px) / 2;
+            y: (root.line-height - root.action-button-height) / 2;
             width: 46px;
             label: "Move";
             tone: ActionButtonTone.yellow;
@@ -340,7 +395,7 @@ component DiffCodeScrollView inherits Rectangle {
 
     list := ListView {
         width: parent.width;
-        height: parent.height - root.scroll-bottom-padding;
+        height: parent.height;
 
         for line[index] in root.lines: HorizontalBox {
             width: list.viewport-width;
@@ -365,6 +420,9 @@ component DiffCodeScrollView inherits Rectangle {
                 show-apply: line.lhs-show-apply && !root.apply-pending;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
+                }
+                vertical-scroll(delta) => {
+                    smooth_y.add-impulse(delta);
                 }
                 gutter-clicked => {
                     root.gutter-clicked(index, true);
@@ -395,6 +453,9 @@ component DiffCodeScrollView inherits Rectangle {
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
+                vertical-scroll(delta) => {
+                    smooth_y.add-impulse(delta);
+                }
                 gutter-clicked => {
                     root.center-gutter-clicked(index);
                 }
@@ -424,6 +485,9 @@ component DiffCodeScrollView inherits Rectangle {
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
+                vertical-scroll(delta) => {
+                    smooth_y.add-impulse(delta);
+                }
                 gutter-clicked => {
                     root.gutter-clicked(index, false);
                 }
@@ -434,57 +498,75 @@ component DiffCodeScrollView inherits Rectangle {
         }
     }
 
+    smooth_y := SmoothScroll1D {
+        offset <=> list.viewport-y;
+        min-offset: root.scroll-min-y;
+        max-offset: 0px;
+    }
+
+    smooth_x := SmoothScroll1D {
+        offset <=> root.code-scroll-x;
+        min-offset: 0px;
+        max-offset: root.scroll-max-x;
+    }
+
     changed max-content-width => {
-        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
     }
 
     changed code-font-size => {
-        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
     }
 
     changed scroll-max-x => {
-        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+        smooth_x.max-offset = root.scroll-max-x;
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
+    }
+
+    changed scroll-min-y => {
+        smooth_y.min-offset = root.scroll-min-y;
+        smooth_y.offset = max(root.scroll-min-y, smooth_y.offset);
     }
 
     public function reset-scroll() {
-        list.viewport-y = 0px;
-        root.code-scroll-x = 0px;
+        smooth_y.set-instant(0px);
+        smooth_x.set-instant(0px);
     }
 
     public function scroll-code-left() {
-        root.code-scroll-x = max(0px, root.code-scroll-x - root.code-font-size * 48 / 12);
+        smooth_x.set-instant(max(0px, root.code-scroll-x - root.code-font-size * 48 / 12));
     }
 
     public function scroll-code-right() {
-        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + root.code-font-size * 48 / 12);
+        smooth_x.set-instant(min(root.scroll-max-x, root.code-scroll-x + root.code-font-size * 48 / 12));
     }
 
     public function scroll-code-horizontal(delta: length) {
-        root.code-scroll-x = min(root.scroll-max-x, max(0px, root.code-scroll-x + delta));
+        smooth_x.add-impulse(delta);
     }
 
     public function page-up() {
-        list.viewport-y = min(0px, list.viewport-y + list.visible-height);
+        smooth_y.set-instant(min(0px, list.viewport-y + list.visible-height));
     }
 
     public function page-down() {
-        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height);
+        smooth_y.set-instant(max(scroll-min-y, list.viewport-y - list.visible-height));
     }
 
     public function half-page-up() {
-        list.viewport-y = min(0px, list.viewport-y + list.visible-height / 2);
+        smooth_y.set-instant(min(0px, list.viewport-y + list.visible-height / 2));
     }
 
     public function half-page-down() {
-        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height / 2);
+        smooth_y.set-instant(max(scroll-min-y, list.viewport-y - list.visible-height / 2));
     }
 
     public function scroll-to-top() {
-        list.viewport-y = 0px;
+        smooth_y.set-instant(0px);
     }
 
     public function scroll-to-bottom() {
-        list.viewport-y = scroll-min-y;
+        smooth_y.set-instant(scroll-min-y);
     }
 }
 
@@ -506,13 +588,13 @@ export component MainWindow inherits Window {
     callback apply-undo-requested();
     callback quit-requested();
 
-    in-out property <length> toolbar-height: 16px;
     in-out property <length> toolbar-gap: 1px;
     in-out property <length> code-font-size: 12px;
     in-out property <brush> gutter-line-color: #6272a4;
     in-out property <brush> gutter-selected-color: #bd93f9;
     in-out property <brush> gutter-insert-color: #50fa7b;
-    private property <length> code-line-height: root.code-font-size + 8px;
+    private property <length> code-line-height: root.code-font-size + 4px;
+    private property <length> toolbar-height: root.code-line-height;
     private property <length> line-number-width: root.code-font-size * 48 / 12;
     private property <bool> show-status-bar: root.status-text != "" || root.file-info != "";
     private property <length> status-bar-height: 72px;
@@ -529,6 +611,11 @@ export component MainWindow inherits Window {
     in-out property <length> code-scroll-x: 0px;
     in-out property <length> max-content-width: 0px;
     private property <bool> vim-pending-g: false;
+
+    changed lines => {
+        code-scroll.reset-scroll();
+        root-focus.focus();
+    }
 
     changed diff-state => {
         if (root.diff-state == DiffState.diffed) {

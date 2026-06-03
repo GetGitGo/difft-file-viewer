@@ -46,17 +46,6 @@ pub fn should_format_file_c(path_c: &Path) -> bool {
     formatting_enabled() && is_c_cpp_file(path_c)
 }
 
-/// Format `file_c` contents when [formatting_enabled] and `path_c` is C/C++.
-///
-/// Returns `None` when formatting should be skipped silently.
-pub fn try_format_file_c(path_c: &Path, lines: &[String]) -> Option<Result<Vec<String>, String>> {
-    if !formatting_enabled() || !is_c_cpp_file(path_c) {
-        return None;
-    }
-    let config = non_empty_clang_format_in_cwd()?;
-    Some(format_lines_in_memory(&config, path_c, lines))
-}
-
 /// Write formatted `file_c` using `./.clangformat` (via cache-dir `.clang-format` copy).
 pub fn spawn_detached_format_file_c(path_c: &Path, lines: &[String]) -> Result<(), String> {
     if !should_format_file_c(path_c) {
@@ -434,7 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn try_format_file_c_skips_non_cpp() {
-        assert!(try_format_file_c(Path::new("foo.rs"), &["fn main() {}".into()]).is_none());
+    fn spawn_format_skips_non_cpp() {
+        assert!(
+            spawn_detached_format_file_c(Path::new("foo.rs"), &["fn main() {}".into()]).is_ok()
+        );
     }
 }

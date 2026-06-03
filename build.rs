@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 const SVG: &str = "assets/icon.svg";
 const ICONS_DIR: &str = "assets/icons";
@@ -21,14 +22,31 @@ fn main() {
 
 fn build_assets() {
     fs::create_dir_all(ICONS_DIR).expect("create icons dir");
+    let svg = Path::new(SVG);
+
+    let mut icons_updated = false;
     for size in PNG_SIZES {
-        render_png(SVG, &icon_png_path(size), size);
+        let png = icon_png_path(size);
+        if is_stale(svg, &png) {
+            render_png(SVG, &png, size);
+            icons_updated = true;
+        }
     }
-    write_ico(&icon_png_paths(&ICO_SIZES), Path::new(ICONS_DIR).join("icon.ico"));
-    write_icns(Path::new(ICONS_DIR));
+
+    let ico_path = Path::new(ICONS_DIR).join("icon.ico");
+    let ico_pngs = icon_png_paths(&ICO_SIZES);
+    let ico_updated = icons_updated || is_any_newer_than(&ico_pngs, &ico_path);
+    if ico_updated {
+        write_ico(&ico_pngs, ico_path);
+    }
+
+    let icns_path = Path::new(ICONS_DIR).join("icon.icns");
+    if icons_updated || is_any_newer_than(&icon_png_paths(&PNG_SIZES), &icns_path) {
+        write_icns(Path::new(ICONS_DIR));
+    }
 
     #[cfg(windows)]
-    {
+    if ico_updated {
         let mut res = winres::WindowsResource::new();
         res.set_icon(&format!("{ICONS_DIR}/icon.ico"));
         res.compile().expect("embed Windows icon");
@@ -36,6 +54,26 @@ fn build_assets() {
 
     // Slint codegen is stack-heavy on Windows.
     slint_build::compile("ui/app.slint").expect("compile slint");
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
+}
+
+fn is_stale(source: &Path, dest: &Path) -> bool {
+    match modified(dest) {
+        None => true,
+        Some(dest_mtime) => modified(source).is_some_and(|source_mtime| source_mtime > dest_mtime),
+    }
+}
+
+fn is_any_newer_than(sources: &[PathBuf], dest: &Path) -> bool {
+    let Some(dest_mtime) = modified(dest) else {
+        return true;
+    };
+    sources
+        .iter()
+        .any(|source| modified(source).is_some_and(|source_mtime| source_mtime > dest_mtime))
 }
 
 fn icon_png_path(size: u32) -> PathBuf {

@@ -1,33 +1,4 @@
-//! LF / CRLF / CR helpers — split like difft, normalize for display, preserve on write.
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LineEnding {
-    #[default]
-    Lf,
-    CrLf,
-    Cr,
-}
-
-impl LineEnding {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LineEnding::Lf => "\n",
-            LineEnding::CrLf => "\r\n",
-            LineEnding::Cr => "\r",
-        }
-    }
-}
-
-/// Prefer CRLF when present, else legacy CR-only, else LF.
-pub fn detect_line_ending(content: &str) -> LineEnding {
-    if content.contains("\r\n") {
-        LineEnding::CrLf
-    } else if content.contains('\r') {
-        LineEnding::Cr
-    } else {
-        LineEnding::Lf
-    }
-}
+//! LF / CRLF / CR helpers — split like difft, normalize for display.
 
 /// Remove a trailing `\r` from one split segment (CRLF / CR source files).
 pub fn normalize_line(line: &str) -> String {
@@ -42,20 +13,40 @@ pub fn split_logical_lines(content: &str) -> Vec<String> {
     content.split('\n').map(normalize_line).collect()
 }
 
-pub fn join_lines(lines: &[String], ending: LineEnding) -> String {
-    lines.join(ending.as_str())
-}
-
-pub fn read_lines_from_content(content: &str) -> (Vec<String>, LineEnding) {
-    (
-        split_logical_lines(content),
-        detect_line_ending(content),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum LineEnding {
+        Lf,
+        CrLf,
+        Cr,
+    }
+
+    impl LineEnding {
+        fn as_str(self) -> &'static str {
+            match self {
+                LineEnding::Lf => "\n",
+                LineEnding::CrLf => "\r\n",
+                LineEnding::Cr => "\r",
+            }
+        }
+    }
+
+    fn detect_line_ending(content: &str) -> LineEnding {
+        if content.contains("\r\n") {
+            LineEnding::CrLf
+        } else if content.contains('\r') {
+            LineEnding::Cr
+        } else {
+            LineEnding::Lf
+        }
+    }
+
+    fn join_lines(lines: &[String], ending: LineEnding) -> String {
+        lines.join(ending.as_str())
+    }
 
     #[test]
     fn crlf_splits_like_difft_and_strips_cr() {

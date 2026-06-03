@@ -10,7 +10,6 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct SyntaxBlock {
     pub id: u32,
-    pub parent_id: Option<u32>,
     pub label: String,
     pub start_line: u32,
     pub end_line: u32,
